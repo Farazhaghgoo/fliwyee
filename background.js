@@ -1,19 +1,20 @@
-// Fliwyee background worker: on/off state, sessions, the icon counter and the session file.
+// Fliwyee background worker: on/off, sessions, the icon counter, the session file and Ask AI.
 // Storage (chrome.storage.local):
-//   enabled   boolean                capture on/off
+//   enabled   boolean                capture on/off (off only pauses: the session keeps going)
 //   current   Session | null         the open session (starts with the first capture)
 //   sessions  Session[]              ended sessions, newest first
-//   lastSaved { count, folder, filename, at } | undefined
-// Session = { id, startedAt, updatedAt, endedAt?, filename?, items: Item[] }
+//   lastSaved { count, folder, filename, error, at }   the last ended session
+//   settings  { ai, prompts: { word, sentence, session } }
+// Session = { id, startedAt, updatedAt, endedAt?, filename?, downloadId?, items: Item[] }
 // Item    = { id, at, type: 'word'|'phrase'|'sentence', text, context, videoId, title, time, auto }
 
 importScripts('lib/format.js');
 
-const { FOLDER, sessionLine, sessionFilename } = self.FliwyeeFormat;
-const DEFAULTS = { enabled: false, current: null, sessions: [] };
+const F = self.FliwyeeFormat;
+const DEFAULTS = { enabled: false, current: null, sessions: [], settings: null };
 const TYPES = new Set(['word', 'phrase', 'sentence']);
 
-// Every state change goes through this queue so two quick captures can't overwrite each other.
+// Every state change goes through this queue so two quick actions can't overwrite each other.
 let queue = Promise.resolve();
 function serial(fn) {
   const run = queue.then(() => fn());
@@ -22,7 +23,6 @@ function serial(fn) {
 }
 
 const getState = () => chrome.storage.local.get(DEFAULTS);
-const norm = (s) => String(s || '').toLocaleLowerCase('it').replace(/\s+/g, ' ').trim();
 const str = (v, max) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
 
 function cleanItem(raw) {
@@ -39,6 +39,12 @@ function cleanItem(raw) {
   };
 }
 
+function findSession(st, sessionId) {
+  if (st.current && (!sessionId || st.current.id === sessionId)) return { s: st.current, isCurrent: true };
+  const s = st.sessions.find((x) => x.id === sessionId);
+  return s ? { s, isCurrent: false } : { s: null, isCurrent: false };
+}
+
 // ---------- captures ----------
 
 async function capture(raw) {
@@ -49,8 +55,8 @@ async function capture(raw) {
 
   const now = Date.now();
   const current = st.current || { id: `s${now}`, startedAt: now, updatedAt: now, items: [] };
-  const key = norm(item.text);
-  if (current.items.some((i) => norm(i.text) === key)) {
+  const key = F.norm(item.text);
+  if (current.items.some((i) => F.norm(i.text) === key)) {
     return { status: 'duplicate', count: current.items.length };
   }
   const saved = { id: `i${now}${Math.random().toString(36).slice(2, 7)}`, at: now, ...item };
@@ -69,7 +75,7 @@ async function undo(id) {
   if (idx < 0) return { status: 'none' };
   const [gone] = cur.items.splice(idx, 1);
   await chrome.storage.local.set({ current: cur });
-  return { status: 'removed', text: gone.text, count: cur.items.length };
+  return { status: 'removed', id: gone.id, text: gone.text, count: cur.items.length };
 }
 
 async function removeItem(sessionId, id) {
@@ -82,43 +88,77 @@ async function removeItem(sessionId, id) {
   return { status: 'removed' };
 }
 
-// ---------- sessions & files ----------
+// ---------- the session file ----------
 
+// Writes (or rewrites) the session's file: Downloads/italian-subtitles/fliwyee_<start>.txt
 async function writeFile(session) {
-  const filename = sessionFilename(session);
-  const url = 'data:text/plain;charset=utf-8,' + encodeURIComponent(sessionLine(session) + '\n');
-  await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
+  const filename = F.sessionFilename(session);
+  const url = 'data:text/plain;charset=utf-8,' + encodeURIComponent(F.sessionText(session));
+  const downloadId = await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
+  session.filename = filename;
+  session.downloadId = downloadId;
   return filename;
 }
 
+async function saveFile(sessionId) {
+  const st = await getState();
+  const { s, isCurrent } = findSession(st, sessionId);
+  if (!s || !s.items.length) return { status: 'empty' };
+  await writeFile(s);
+  await chrome.storage.local.set(isCurrent ? { current: s } : { sessions: st.sessions });
+  return { status: 'saved', filename: s.filename };
+}
+
+async function showFile(sessionId) {
+  const st = await getState();
+  const { s } = findSession(st, sessionId);
+  if (s && s.downloadId != null) {
+    try {
+      const [d] = await chrome.downloads.search({ id: s.downloadId });
+      if (d && d.exists !== false && d.state === 'complete') {
+        chrome.downloads.show(s.downloadId);
+        return { status: 'shown' };
+      }
+    } catch (_) {
+      /* fall back to the folder */
+    }
+  }
+  chrome.downloads.showDefaultFolder();
+  return { status: 'folder' };
+}
+
 // Ends the open session: writes its file and moves it to the past sessions.
-// Fills `patch` with the storage changes; the caller saves them in one go.
-async function endCurrent(st, patch) {
+async function endSession() {
+  const st = await getState();
   const cur = st.current;
-  patch.current = null;
-  if (!cur || !cur.items.length) return null;
+  if (!cur) return { status: 'empty' };
+  if (!cur.items.length) {
+    await chrome.storage.local.set({ current: null });
+    return { status: 'empty' };
+  }
   cur.endedAt = Date.now();
   let error = null;
   try {
-    cur.filename = await writeFile(cur);
+    await writeFile(cur);
   } catch (e) {
     error = String((e && e.message) || e);
   }
-  patch.sessions = [cur, ...st.sessions];
-  patch.lastSaved = { count: cur.items.length, folder: FOLDER, filename: cur.filename || null, error, at: cur.endedAt };
-  return patch.lastSaved;
+  const lastSaved = { count: cur.items.length, folder: F.FOLDER, filename: cur.filename || null, error, at: cur.endedAt };
+  await chrome.storage.local.set({ current: null, sessions: [cur, ...st.sessions], lastSaved });
+  return { status: 'saved', saved: lastSaved };
 }
 
-async function setEnabled(on) {
+async function deleteSession(sessionId) {
   const st = await getState();
-  if (on) {
-    if (!st.enabled) await chrome.storage.local.set({ enabled: true });
-    return { status: 'ok', enabled: true };
-  }
-  const patch = { enabled: false };
-  const saved = await endCurrent(st, patch);
-  await chrome.storage.local.set(patch);
-  return { status: 'ok', enabled: false, saved };
+  await chrome.storage.local.set({ sessions: st.sessions.filter((x) => x.id !== sessionId) });
+  return { status: 'deleted' };
+}
+
+// ---------- on / off (pausing never ends the session) ----------
+
+async function setEnabled(on) {
+  await chrome.storage.local.set({ enabled: !!on });
+  return { status: 'ok', enabled: !!on };
 }
 
 async function toggle() {
@@ -126,29 +166,127 @@ async function toggle() {
   return setEnabled(!st.enabled);
 }
 
-async function endSession() {
-  const st = await getState();
-  const patch = {};
-  const saved = await endCurrent(st, patch);
-  await chrome.storage.local.set(patch);
-  return { status: saved ? 'saved' : 'empty', saved };
+// ---------- Ask AI ----------
+
+// Runs inside the AI chat page: puts the prompt in the message box (you press Enter yourself).
+async function insertPrompt(text) {
+  const SELECTORS = [
+    '#prompt-textarea', // ChatGPT
+    'div.ProseMirror[contenteditable="true"]', // Claude, ChatGPT
+    'rich-textarea [contenteditable="true"]', // Gemini
+    '.ql-editor[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    'textarea',
+  ];
+  const visible = (el) => !!el && (el.offsetWidth > 0 || el.offsetHeight > 0);
+  const find = () => {
+    for (const sel of SELECTORS) {
+      const el = Array.from(document.querySelectorAll(sel)).find(visible);
+      if (el) return el;
+    }
+    return null;
+  };
+  const squash = (s) => String(s || '').replace(/\s+/g, '');
+  const valueOf = (el) => (el.tagName === 'TEXTAREA' ? el.value : el.innerText || el.textContent || '');
+
+  const notice = (msg) => {
+    const n = document.createElement('div');
+    n.textContent = msg;
+    n.style.cssText =
+      'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:10px 16px;' +
+      'border-radius:8px;background:#1b1b1b;color:#fff;font:500 14px/1.3 system-ui,sans-serif;' +
+      'box-shadow:0 4px 18px rgba(0,0,0,.3);';
+    document.documentElement.appendChild(n);
+    setTimeout(() => n.remove(), 3500);
+  };
+
+  let box = find();
+  for (let i = 0; !box && i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    box = find();
+  }
+  if (!box) {
+    notice('Fliwyee: the prompt is copied. Click the message box and press Ctrl+V.');
+    return false;
+  }
+
+  box.focus();
+  if (box.isContentEditable) {
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  const insert = (valueOf(box).trim() ? '\n\n' : '') + text;
+  const marker = squash(text).slice(0, 24);
+  let ok = false;
+  try {
+    ok = document.execCommand('insertText', false, insert) && squash(valueOf(box)).includes(marker);
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', insert);
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 100));
+    ok = squash(valueOf(box)).includes(marker);
+  }
+  notice(ok ? 'Fliwyee: prompt added. Check it and press Enter.' : 'Fliwyee: the prompt is copied. Press Ctrl+V.');
+  return ok;
 }
 
-async function saveFile(sessionId) {
-  const st = await getState();
-  const isCurrent = st.current && (!sessionId || st.current.id === sessionId);
-  const s = isCurrent ? st.current : st.sessions.find((x) => x.id === sessionId);
-  if (!s || !s.items.length) return { status: 'empty' };
-  s.filename = await writeFile(s);
-  await chrome.storage.local.set(isCurrent ? { current: s } : { sessions: st.sessions });
-  return { status: 'saved', filename: s.filename };
+function waitForTabLoad(tabId, timeoutMs) {
+  return new Promise((resolve) => {
+    const done = () => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onUpdated = (id, info) => {
+      if (id === tabId && info.status === 'complete') done();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
 }
 
-async function deleteSession(sessionId) {
+// Go to the AI chat you used last (or open a new one) and put the prompt in its message box.
+// The caller has already copied the prompt, so Ctrl+V always works as a backup.
+async function askAI(text) {
+  const prompt = String(text || '').slice(0, 20000);
+  if (!prompt.trim()) return { status: 'empty' };
   const st = await getState();
-  const sessions = st.sessions.filter((x) => x.id !== sessionId);
-  await chrome.storage.local.set({ sessions });
-  return { status: 'deleted' };
+  const settings = F.mergedSettings(st.settings);
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: F.AI_SITES.map((a) => a.match) });
+  } catch (_) {
+    tabs = [];
+  }
+  tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  let tab = tabs[0];
+  if (tab) {
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+  } else {
+    const site = F.AI_SITES.find((a) => a.id === settings.ai) || F.AI_SITES[0];
+    tab = await chrome.tabs.create({ url: site.newUrl, active: true });
+    await waitForTabLoad(tab.id, 15000);
+  }
+
+  const site = F.aiSiteForUrl(tab.url || tab.pendingUrl) || F.AI_SITES.find((a) => a.id === settings.ai);
+  let inserted = false;
+  try {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: insertPrompt, args: [prompt] });
+    inserted = !!(res && res.result);
+  } catch (_) {
+    inserted = false;
+  }
+  return { status: 'ok', inserted, site: site ? site.name : 'your AI chat' };
 }
 
 // ---------- icon badge ----------
@@ -156,9 +294,18 @@ async function deleteSession(sessionId) {
 async function refreshBadge() {
   const st = await getState();
   const n = st.current ? st.current.items.length : 0;
-  await chrome.action.setBadgeText({ text: st.enabled ? (n ? String(n) : 'ON') : '' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#008C45' });
+  // green number while capturing, grey number while paused with a session open
+  const text = st.enabled ? (n ? String(n) : 'ON') : n ? String(n) : '';
+  await chrome.action.setBadgeText({ text });
+  await chrome.action.setBadgeBackgroundColor({ color: st.enabled ? '#008C45' : '#6B7075' });
   if (chrome.action.setBadgeTextColor) await chrome.action.setBadgeTextColor({ color: '#FFFFFF' });
+  await chrome.action.setTitle({
+    title: st.enabled
+      ? `Fliwyee: capturing${n ? ` · ${F.plural(n)}` : ''}`
+      : n
+        ? `Fliwyee: paused · session open (${F.plural(n)})`
+        : 'Fliwyee: off',
+  });
 }
 
 // ---------- wiring ----------
@@ -171,10 +318,16 @@ const HANDLERS = {
   setEnabled: (m) => setEnabled(!!m.on),
   endSession: () => endSession(),
   saveFile: (m) => saveFile(m.sessionId),
+  showFile: (m) => showFile(m.sessionId),
   deleteSession: (m) => deleteSession(m.sessionId),
 };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg && msg.type === 'askAI') {
+    // not queued: it only reads state, and it waits for other tabs
+    askAI(msg.text).then(sendResponse, (err) => sendResponse({ status: 'error', message: String((err && err.message) || err) }));
+    return true;
+  }
   const handler = msg && HANDLERS[msg.type];
   if (!handler) return false;
   serial(() => handler(msg)).then(sendResponse, (err) =>
@@ -185,24 +338,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-capture') serial(toggle);
+  else if (command === 'end-session') serial(endSession);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && (changes.enabled || changes.current)) refreshBadge();
 });
 
-// Capture is always off when the browser starts. A session left open (browser closed while on)
-// is ended and its file written, so nothing is lost.
-chrome.runtime.onStartup.addListener(() => {
-  serial(async () => {
-    const st = await getState();
-    if (!st.enabled && !st.current) return;
-    const patch = { enabled: false };
-    await endCurrent(st, patch);
-    await chrome.storage.local.set(patch);
-  });
-});
-
+// Capture is off when Chrome starts. An open session stays open until you end it.
+chrome.runtime.onStartup.addListener(() => serial(() => setEnabled(false)));
 chrome.runtime.onInstalled.addListener(() => refreshBadge());
 
 // Clicking the toolbar icon opens the side panel.
