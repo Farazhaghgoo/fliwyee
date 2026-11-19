@@ -234,8 +234,33 @@ button {
 
 .item {
   position: relative;
-  padding: 9px 28px 9px 0;
+  padding: 9px 62px 9px 0;
   border-bottom: 1px solid var(--line);
+}
+
+.item .tools {
+  position: absolute;
+  top: 8px;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.item .ai {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.item .ai:hover {
+  border-color: var(--accent);
 }
 
 .item .text {
@@ -309,9 +334,6 @@ button {
 }
 
 .item .del {
-  position: absolute;
-  top: 8px;
-  right: 0;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -375,4 +397,68 @@ button {
   .item .del {
     opacity: 1;
   }
+}
+
+/* primary action */
+.actions .primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.actions .primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+/* settings */
+.settings {
+  margin-top: 18px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.settings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.settings label {
+  display: block;
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings textarea,
+.settings select {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+}
+
+.settings textarea {
+  resize: vertical;
+}
+
+.settings textarea:focus,
+.settings select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.settings .hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings .actions {
+  align-items: center;
+  margin-top: 12px;
 }

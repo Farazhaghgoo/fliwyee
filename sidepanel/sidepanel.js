@@ -1,12 +1,12 @@
-// Fliwyee side panel: on/off, the current session, past sessions.
+// Fliwyee side panel: pause/resume, the open session, past sessions, Ask AI and settings.
 (() => {
   'use strict';
 
-  const { sessionLine, fmtTime, watchUrl } = self.FliwyeeFormat;
+  const F = self.FliwyeeFormat;
   const $ = (id) => document.getElementById(id);
-  let state = { enabled: false, current: null, sessions: [] };
+  let state = { enabled: false, current: null, sessions: [], settings: null };
   let statusTimer = 0;
-  const plural = (n) => `${n} item${n === 1 ? '' : 's'}`;
+  let settingsTimer = 0;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -15,12 +15,20 @@
     return e;
   }
 
-  function status(message) {
+  function button(label, cls, onClick, title) {
+    const b = el('button', cls, label);
+    b.type = 'button';
+    if (title) b.title = title;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function status(message, ms) {
     const s = $('status');
     s.textContent = message;
     s.classList.add('show');
     clearTimeout(statusTimer);
-    statusTimer = setTimeout(() => s.classList.remove('show'), 2200);
+    statusTimer = setTimeout(() => s.classList.remove('show'), ms || 2400);
   }
 
   async function send(msg) {
@@ -31,32 +39,44 @@
     }
   }
 
-  async function copy(text, label) {
-    let ok = false;
+  async function copyText(text) {
     try {
       await navigator.clipboard.writeText(text);
-      ok = true;
+      return true;
     } catch (_) {
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
       document.body.append(ta);
       ta.select();
+      let ok = false;
       try {
         ok = document.execCommand('copy');
       } catch (_) {
         ok = false;
       }
       ta.remove();
+      return ok;
     }
-    status(ok ? label || 'Copied' : 'Could not copy');
   }
 
-  const dateLabel = (ms) =>
-    new Date(ms).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  async function copy(text, label) {
+    status((await copyText(text)) ? label || 'Copied' : 'Could not copy');
+  }
+
+  // Copy the prompt, then let Fliwyee put it in the AI chat you used last (or open one).
+  async function ask(prompt) {
+    const copied = await copyText(prompt);
+    status('Opening your AI chat…', 6000);
+    const r = await send({ type: 'askAI', text: prompt });
+    if (r && r.status === 'ok') {
+      status(r.inserted ? `Sent to ${r.site}. Press Enter there.` : `Copied. Paste it in ${r.site} (Ctrl+V).`, 4000);
+    } else status(copied ? 'Copied. Paste it in your AI chat (Ctrl+V).' : 'Could not reach your AI chat.', 4000);
+  }
 
   // Jump to the moment in the video: reuse an open tab with that video, otherwise open it.
   async function openAt(item) {
+    const url = F.watchUrl(item);
     try {
       const tabs = await chrome.tabs.query({ url: 'https://www.youtube.com/watch*' });
       const tab = tabs.find((t) => {
@@ -66,39 +86,36 @@
           return false;
         }
       });
-      if (tab) {
-        await chrome.tabs.update(tab.id, { active: true });
-        await chrome.windows.update(tab.windowId, { focused: true });
-        try {
-          const r = await chrome.tabs.sendMessage(tab.id, { type: 'seek', videoId: item.videoId, time: item.time });
-          if (r && r.ok) return;
-        } catch (_) {
-          /* tab not ready: reload it at the right time */
-        }
-        await chrome.tabs.update(tab.id, { url: watchUrl(item) });
-      } else {
-        await chrome.tabs.create({ url: watchUrl(item) });
+      if (!tab) {
+        await chrome.tabs.create({ url });
+        return;
       }
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      try {
+        const r = await chrome.tabs.sendMessage(tab.id, { type: 'seek', videoId: item.videoId, time: item.time });
+        if (r && r.ok) return;
+      } catch (_) {
+        /* the tab was opened before Fliwyee was (re)loaded: load it at the right moment */
+      }
+      await chrome.tabs.update(tab.id, { url });
     } catch (_) {
-      chrome.tabs.create({ url: watchUrl(item) });
+      chrome.tabs.create({ url });
     }
   }
 
+  // ---------- rendering ----------
+
   function itemRow(session, it) {
     const li = el('li', `item item-${it.type}`);
-    const text = el('button', 'text', it.text);
-    text.type = 'button';
-    text.title = 'Click to copy';
-    text.addEventListener('click', () => copy(it.text, `Copied: ${it.text}`));
-    li.append(text);
-
+    li.append(button(it.text, 'text', () => copy(it.text, `Copied: ${it.text}`), 'Click to copy'));
     if (it.context) li.append(el('div', 'ctx', it.context));
 
     const meta = el('div', 'meta');
     if (it.type !== 'word') meta.append(el('span', 'tag', it.type));
     if (it.videoId) {
-      const a = el('a', 'time', `▶ ${fmtTime(it.time)}`);
-      a.href = watchUrl(it);
+      const a = el('a', 'time', `▶ ${F.fmtTime(it.time)}`);
+      a.href = F.watchUrl(it);
       a.title = 'Play from here';
       a.addEventListener('click', (e) => {
         e.preventDefault();
@@ -118,12 +135,12 @@
     }
     li.append(meta);
 
-    const del = el('button', 'del', '✕');
-    del.type = 'button';
-    del.title = 'Remove';
+    const tools = el('div', 'tools');
+    tools.append(button('AI', 'ai', () => ask(F.itemPrompt(it, state.settings)), 'Ask your AI chat about this'));
+    const del = button('✕', 'del', () => send({ type: 'remove', sessionId: session.id, id: it.id }), 'Remove');
     del.setAttribute('aria-label', `Remove ${it.text}`);
-    del.addEventListener('click', () => send({ type: 'remove', sessionId: session.id, id: it.id }));
-    li.append(del);
+    tools.append(del);
+    li.append(tools);
     return li;
   }
 
@@ -131,15 +148,17 @@
     const cur = state.current;
     const items = cur ? cur.items : [];
     $('count').textContent = String(items.length);
-    $('started').textContent = cur ? `started ${dateLabel(cur.startedAt)}` : '';
+    $('started').textContent = cur ? `started ${F.dateLabel(cur.startedAt)}` : '';
     const list = $('items');
     list.textContent = '';
     for (const it of items.slice().reverse()) list.append(itemRow(cur, it));
-    $('empty').hidden = items.length > 0;
-    $('empty').textContent = state.enabled
-      ? 'Capture is on. Click a word in the YouTube subtitles.'
+    const empty = $('empty');
+    empty.hidden = items.length > 0;
+    empty.textContent = state.enabled
+      ? 'Capturing. Click a word in the YouTube subtitles.'
       : 'Turn Fliwyee on, then click a word in the YouTube subtitles.';
-    for (const id of ['copy-all', 'save-file', 'end-session']) $(id).disabled = items.length === 0;
+    for (const id of ['ask-all', 'copy-all', 'save-file', 'end-session']) $(id).disabled = items.length === 0;
+    $('show-file').disabled = !(cur && cur.downloadId != null);
   }
 
   function renderPast() {
@@ -151,27 +170,24 @@
       d.dataset.id = s.id;
       if (open.has(s.id)) d.open = true;
       const sum = el('summary');
-      sum.append(el('span', 'when', dateLabel(s.startedAt)), el('span', 'count', String(s.items.length)));
+      sum.append(el('span', 'when', F.dateLabel(s.startedAt)), el('span', 'count', String(s.items.length)));
       d.append(sum);
 
       const actions = el('div', 'actions');
-      const copyBtn = el('button', null, 'Copy all');
-      copyBtn.type = 'button';
-      copyBtn.addEventListener('click', () => copy(sessionLine(s), `Copied ${plural(s.items.length)}`));
-      const saveBtn = el('button', null, 'Save file');
-      saveBtn.type = 'button';
-      saveBtn.addEventListener('click', async () => {
-        const r = await send({ type: 'saveFile', sessionId: s.id });
-        status(r && r.status === 'saved' ? `Saved to Downloads/${r.filename}` : 'Could not save the file');
-      });
-      const delBtn = el('button', 'danger', 'Delete');
-      delBtn.type = 'button';
-      delBtn.addEventListener('click', () => {
-        if (confirm('Delete this session from Fliwyee? A file you already saved in Downloads stays.')) {
-          send({ type: 'deleteSession', sessionId: s.id });
-        }
-      });
-      actions.append(copyBtn, saveBtn, delBtn);
+      actions.append(
+        button('Ask AI about all', 'primary', () => ask(F.sessionPrompt(s, state.settings))),
+        button('Copy all', null, () => copy(F.sessionText(s), `Copied ${F.plural(s.items.length)}`)),
+        button('Save file', null, async () => {
+          const r = await send({ type: 'saveFile', sessionId: s.id });
+          status(r && r.status === 'saved' ? `Saved to Downloads/${r.filename}` : 'Could not save the file');
+        }),
+        button('Show file', null, () => send({ type: 'showFile', sessionId: s.id })),
+        button('Delete', 'danger', () => {
+          if (confirm('Delete this session from Fliwyee? A file you already saved in Downloads stays.')) {
+            send({ type: 'deleteSession', sessionId: s.id });
+          }
+        })
+      );
       d.append(actions);
 
       const list = el('ol', 'items');
@@ -184,42 +200,70 @@
 
   function renderToggle() {
     const b = $('toggle');
+    const open = !!(state.current && state.current.items.length);
     b.setAttribute('aria-pressed', String(state.enabled));
     b.classList.toggle('on', state.enabled);
-    $('toggle-label').textContent = state.enabled ? 'On' : 'Off';
-    b.title = state.enabled ? 'Turn capture off (ends the session and saves the file)' : 'Turn capture on';
+    $('toggle-label').textContent = state.enabled ? 'On' : open ? 'Paused' : 'Off';
+    b.title = state.enabled ? 'Pause capture (the session keeps going)' : 'Turn capture on';
+  }
+
+  function renderSettings() {
+    const s = F.mergedSettings(state.settings);
+    const fields = { 'p-word': s.prompts.word, 'p-sentence': s.prompts.sentence, 'p-session': s.prompts.session };
+    for (const [id, value] of Object.entries(fields)) {
+      if (document.activeElement !== $(id)) $(id).value = value; // don't overwrite while you type
+    }
+    if (document.activeElement !== $('ai')) $('ai').value = s.ai;
   }
 
   function render() {
     renderToggle();
     renderCurrent();
     renderPast();
+    renderSettings();
   }
 
-  async function load() {
-    state = await chrome.storage.local.get({ enabled: false, current: null, sessions: [] });
-    render();
+  // ---------- settings ----------
+
+  for (const a of F.AI_SITES) {
+    const o = el('option', null, a.name);
+    o.value = a.id;
+    $('ai').append(o);
   }
 
-  async function showShortcut() {
-    try {
-      const cmds = await chrome.commands.getAll();
-      const c = cmds.find((x) => x.name === 'toggle-capture');
-      $('shortcut').textContent = c && c.shortcut ? c.shortcut : 'not set';
-    } catch (_) {
-      $('shortcut').textContent = 'Ctrl+Shift+X';
-    }
+  function saveSettings() {
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(async () => {
+      const settings = {
+        ai: $('ai').value,
+        prompts: { word: $('p-word').value, sentence: $('p-sentence').value, session: $('p-session').value },
+      };
+      await chrome.storage.local.set({ settings });
+      $('settings-saved').textContent = 'Saved';
+      setTimeout(() => ($('settings-saved').textContent = ''), 1500);
+    }, 400);
   }
 
-  // ---------- wiring ----------
+  for (const id of ['p-word', 'p-sentence', 'p-session']) $(id).addEventListener('input', saveSettings);
+  $('ai').addEventListener('change', saveSettings);
+  $('reset-prompts').addEventListener('click', async () => {
+    const { prompts } = F.DEFAULT_SETTINGS;
+    $('p-word').value = prompts.word;
+    $('p-sentence').value = prompts.sentence;
+    $('p-session').value = prompts.session;
+    saveSettings();
+  });
 
-  $('toggle').addEventListener('click', async () => {
-    const r = await send({ type: 'setEnabled', on: !state.enabled });
-    if (r && r.saved && r.saved.filename) status(`Saved ${plural(r.saved.count)} to Downloads/${r.saved.filename}`);
+  // ---------- buttons ----------
+
+  $('toggle').addEventListener('click', () => send({ type: 'setEnabled', on: !state.enabled }));
+
+  $('ask-all').addEventListener('click', () => {
+    if (state.current) ask(F.sessionPrompt(state.current, state.settings));
   });
 
   $('copy-all').addEventListener('click', () => {
-    if (state.current) copy(sessionLine(state.current), `Copied ${plural(state.current.items.length)}`);
+    if (state.current) copy(F.sessionText(state.current), `Copied ${F.plural(state.current.items.length)}`);
   });
 
   $('save-file').addEventListener('click', async () => {
@@ -227,9 +271,13 @@
     status(r && r.status === 'saved' ? `Saved to Downloads/${r.filename}` : 'Could not save the file');
   });
 
+  $('show-file').addEventListener('click', () => send({ type: 'showFile' }));
+
   $('end-session').addEventListener('click', async () => {
     const r = await send({ type: 'endSession' });
-    status(r && r.saved ? `Session ended · saved to Downloads/${r.saved.filename || r.saved.folder}` : 'Nothing to save');
+    if (r && r.saved) {
+      status(r.saved.filename ? `Session saved to Downloads/${r.saved.filename}` : 'Session ended, but the file could not be written', 3500);
+    } else status('Nothing to save');
   });
 
   $('change-shortcut').addEventListener('click', (e) => {
@@ -237,17 +285,36 @@
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
   });
 
+  // ---------- data ----------
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    const defaults = { enabled: false, current: null, sessions: [], settings: null };
     let dirty = false;
-    for (const key of ['enabled', 'current', 'sessions']) {
+    for (const key of Object.keys(defaults)) {
       if (changes[key]) {
-        state[key] = changes[key].newValue != null ? changes[key].newValue : key === 'sessions' ? [] : key === 'enabled' ? false : null;
+        state[key] = changes[key].newValue != null ? changes[key].newValue : defaults[key];
         dirty = true;
       }
     }
     if (dirty) render();
   });
+
+  async function showShortcuts() {
+    let cmds = [];
+    try {
+      cmds = await chrome.commands.getAll();
+    } catch (_) {
+      cmds = [];
+    }
+    const sc = (name, fallback) => {
+      const c = cmds.find((x) => x.name === name);
+      return c ? c.shortcut || 'not set' : fallback;
+    };
+    $('sc-toggle').textContent = sc('toggle-capture', 'Ctrl+Shift+X');
+    $('sc-end').textContent = sc('end-session', 'Ctrl+Shift+E');
+    $('sc-end-2').textContent = sc('end-session', 'Ctrl+Shift+E');
+  }
 
   // Keep the help open on first use only.
   try {
@@ -259,6 +326,9 @@
     /* storage blocked: leave it closed */
   }
 
-  load();
-  showShortcut();
+  chrome.storage.local.get({ enabled: false, current: null, sessions: [], settings: null }).then((st) => {
+    state = st;
+    render();
+  });
+  showShortcuts();
 })();

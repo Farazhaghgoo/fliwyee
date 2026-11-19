@@ -21,20 +21,24 @@
     </header>
 
     <p class="shortcut">
-      On/off: <kbd id="shortcut">…</kbd>
+      Pause / resume <kbd id="sc-toggle">…</kbd> · End session <kbd id="sc-end">…</kbd>
       <a href="#" id="change-shortcut">change</a>
     </p>
 
     <details class="help" id="help">
-      <summary>How to capture</summary>
+      <summary>How to use</summary>
       <ul>
         <li><b>Click</b> a word in the subtitles</li>
         <li><b>Drag</b> across words for a phrase</li>
         <li><kbd>S</kbd> the whole subtitle line</li>
         <li><kbd>R</kbd> replay the line · <kbd>Shift</kbd>+<kbd>R</kbd> slower</li>
+        <li><kbd>Q</kbd> ask your AI chat about the last capture</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo the last capture</li>
       </ul>
-      <p>Turning capture off ends the session and saves it to <code>Downloads/italian-subtitles</code>.</p>
+      <p>
+        Pausing keeps the session going. Ending it (<kbd id="sc-end-2">Ctrl+Shift+E</kbd> or <b>End session</b>) saves it
+        to <code>Downloads/italian-subtitles</code>.
+      </p>
     </details>
 
     <section class="session" aria-labelledby="current-title">
@@ -43,12 +47,14 @@
         <span id="started" class="muted"></span>
       </div>
       <div class="actions">
+        <button type="button" id="ask-all" class="primary">Ask AI about all</button>
         <button type="button" id="copy-all">Copy all</button>
         <button type="button" id="save-file">Save file</button>
+        <button type="button" id="show-file">Show file</button>
         <button type="button" id="end-session">End session</button>
       </div>
       <ol id="items" class="items"></ol>
-      <p id="empty" class="empty">Turn Fliwyee on, then click a word in the YouTube subtitles.</p>
+      <p id="empty" class="empty"></p>
     </section>
 
     <section class="past" aria-labelledby="past-title">
@@ -56,6 +62,29 @@
       <div id="past-list"></div>
       <p id="past-empty" class="empty">Ended sessions show up here.</p>
     </section>
+
+    <details class="settings" id="settings">
+      <summary>Settings</summary>
+      <label for="ai">AI to open when no AI chat is open</label>
+      <select id="ai"></select>
+
+      <label for="p-word">Prompt for a word or phrase</label>
+      <textarea id="p-word" rows="5" spellcheck="false"></textarea>
+      <p class="hint"><code>{text}</code> the word or phrase · <code>{sentence}</code> its sentence</p>
+
+      <label for="p-sentence">Prompt for a sentence</label>
+      <textarea id="p-sentence" rows="4" spellcheck="false"></textarea>
+      <p class="hint"><code>{sentence}</code> the sentence</p>
+
+      <label for="p-session">Prompt for the whole session</label>
+      <textarea id="p-session" rows="6" spellcheck="false"></textarea>
+      <p class="hint"><code>{items}</code> your sentences, each with the words you took from it</p>
+
+      <div class="actions">
+        <button type="button" id="reset-prompts">Reset prompts</button>
+        <span id="settings-saved" class="muted"></span>
+      </div>
+    </details>
 
     <div id="status" class="status" role="status" aria-live="polite"></div>
 
