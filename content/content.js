@@ -558,7 +558,29 @@
 
   // Mouse presses on the subtitles are ours while capture is on:
   // YouTube must not drag the subtitle box or pause the video.
+  // After Fliwyee is updated or removed, this copy in an already-open tab is cut off from the
+  // extension. It then switches itself off so YouTube works normally until you reload.
+  const alive = () => {
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch (_) {
+      return false;
+    }
+  };
+  let retired = false;
+  function retire() {
+    if (retired) return;
+    retired = true;
+    enabled = false;
+    stopReplay();
+    for (const [type, fn] of LISTENERS) window.removeEventListener(type, fn, true);
+    if (ui) [ui.pill, ui.toast, ui.hl].forEach((node) => node.remove());
+    ui = null;
+    if (document.documentElement) document.documentElement.classList.remove(ON_CLASS);
+  }
+
   function onPress(e) {
+    if (!alive()) return retire();
     if (!enabled || e.button !== 0) return;
     if (e.type === 'pointerdown') pressInCaption = !!captionWindowOf(e.target);
     if (pressInCaption) block(e);
@@ -587,11 +609,13 @@
 
   function onMove(e) {
     if (!enabled) return;
+    if (!alive()) return retire();
     lastMouse = { x: e.clientX, y: e.clientY, dragging: (e.buttons & 1) === 1 };
     scheduleHighlight();
   }
 
   function onKeyDown(e) {
+    if (!alive()) return retire();
     if (!enabled || e.repeat || isTyping(e) || !$video()) return;
     const key = (e.key || '').toLowerCase();
     const noMods = !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -610,11 +634,17 @@
     }
   }
 
-  for (const type of ['pointerdown', 'mousedown']) window.addEventListener(type, onPress, true);
-  for (const type of ['pointerup', 'mouseup']) window.addEventListener(type, onRelease, true);
-  for (const type of ['click', 'dblclick']) window.addEventListener(type, onClick, true);
-  window.addEventListener('mousemove', onMove, true);
-  window.addEventListener('keydown', onKeyDown, true);
+  const LISTENERS = [
+    ['pointerdown', onPress],
+    ['mousedown', onPress],
+    ['pointerup', onRelease],
+    ['mouseup', onRelease],
+    ['click', onClick],
+    ['dblclick', onClick],
+    ['mousemove', onMove],
+    ['keydown', onKeyDown],
+  ];
+  for (const [type, fn] of LISTENERS) window.addEventListener(type, fn, true);
 
   // YouTube changes video without reloading the page.
   window.addEventListener('yt-navigate-finish', () => {
