@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fliwyee</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <img src="../icons/icon48.png" alt="" width="28" height="28" />
+        <div>
+          <h1>Fliwyee</h1>
+          <p class="sub">Learning Italian with YouTube, easier</p>
+        </div>
+      </div>
+      <button id="toggle" class="toggle" type="button" aria-pressed="false">
+        <span class="knob"></span><span id="toggle-label">Off</span>
+      </button>
+    </header>
+
+    <p class="shortcut">
+      On/off: <kbd id="shortcut">…</kbd>
+      <a href="#" id="change-shortcut">change</a>
+    </p>
+
+    <details class="help" id="help">
+      <summary>How to capture</summary>
+      <ul>
+        <li><b>Click</b> a word in the subtitles</li>
+        <li><b>Drag</b> across words for a phrase</li>
+        <li><kbd>S</kbd> the whole subtitle line</li>
+        <li><kbd>R</kbd> replay the line · <kbd>Shift</kbd>+<kbd>R</kbd> slower</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo the last capture</li>
+      </ul>
+      <p>Turning capture off ends the session and saves it to <code>Downloads/italian-subtitles</code>.</p>
+    </details>
+
+    <section class="session" aria-labelledby="current-title">
+      <div class="section-head">
+        <h2 id="current-title">This session <span id="count" class="count">0</span></h2>
+        <span id="started" class="muted"></span>
+      </div>
+      <div class="actions">
+        <button type="button" id="copy-all">Copy all</button>
+        <button type="button" id="save-file">Save file</button>
+        <button type="button" id="end-session">End session</button>
+      </div>
+      <ol id="items" class="items"></ol>
+      <p id="empty" class="empty">Turn Fliwyee on, then click a word in the YouTube subtitles.</p>
+    </section>
+
+    <section class="past" aria-labelledby="past-title">
+      <h2 id="past-title">Past sessions</h2>
+      <div id="past-list"></div>
+      <p id="past-empty" class="empty">Ended sessions show up here.</p>
+    </section>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <script src="../lib/format.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
