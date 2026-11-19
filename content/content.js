@@ -38,6 +38,11 @@
   const currentVideoId = () => new URLSearchParams(location.search).get('v') || '';
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
   const isWordChar = (ch) => !!ch && WORD_CHAR.test(ch);
+  // Letters, plus an apostrophe between letters, so c'entra / un'ora / dov'è stay one word.
+  const inWord = (s, k) =>
+    k >= 0 && k < s.length && (isWordChar(s[k]) || (APOSTROPHES.includes(s[k]) && isWordChar(s[k - 1]) && isWordChar(s[k + 1])));
+  // "un po'": keep an apostrophe that ends a word.
+  const trailingApostrophe = (s, end) => (end < s.length && APOSTROPHES.includes(s[end]) && isWordChar(s[end - 1]) ? 1 : 0);
   const asElement = (node) => (node ? (node.nodeType === 1 ? node : node.parentElement) : null);
   const captionWindowOf = (node) => {
     const el = asElement(node);
@@ -95,13 +100,13 @@
     if (!parent || !parent.closest('.ytp-caption-segment')) return null;
     const text = c.node.data;
     let i = Math.min(c.offset, text.length);
-    if (!isWordChar(text[i]) && isWordChar(text[i - 1])) i -= 1;
-    if (!isWordChar(text[i])) return null;
+    if (!inWord(text, i) && inWord(text, i - 1)) i -= 1;
+    if (!inWord(text, i)) return null;
     let start = i;
     let end = i + 1;
-    while (start > 0 && isWordChar(text[start - 1])) start--;
-    while (end < text.length && isWordChar(text[end])) end++;
-    if (APOSTROPHES.includes(text[end] || '\0')) end++; // l', dell', un'
+    while (inWord(text, start - 1)) start--;
+    while (inWord(text, end)) end++;
+    end += trailingApostrophe(text, end);
     const range = document.createRange();
     range.setStart(c.node, start);
     range.setEnd(c.node, end);
@@ -120,9 +125,9 @@
     if (idx >= 0) {
       let a = idx;
       let b = idx + s.length;
-      while (a > 0 && isWordChar(full[a - 1])) a--;
-      while (b < full.length && isWordChar(full[b])) b++;
-      if (isWordChar(full[b - 1]) && APOSTROPHES.includes(full[b] || '\0')) b++;
+      while (inWord(full, a - 1) && inWord(full, a)) a--;
+      while (inWord(full, b) && inWord(full, b - 1)) b++;
+      b += trailingApostrophe(full, b);
       out = full.slice(a, b);
     }
     return out.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}'’]+$/u, '');
@@ -237,8 +242,16 @@
     ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick'].forEach((type) =>
       ui.toast.addEventListener(type, (e) => e.stopPropagation())
     );
+    // Keep the message (and its Undo) while the mouse is on it.
+    ui.toast.addEventListener('mouseenter', () => clearTimeout(toastTimer));
+    ui.toast.addEventListener('mouseleave', () => hideToastSoon(1200));
     updatePill();
     return ui;
+  }
+
+  function hideToastSoon(ms) {
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => ui && ui.toast.classList.remove('show'), ms);
   }
 
   function updatePill() {
@@ -272,8 +285,7 @@
       t.append(b);
     }
     t.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), undoId ? 3000 : 2000);
+    hideToastSoon(undoId ? 4000 : 2000);
   }
 
   function hideHighlight() {
@@ -410,7 +422,7 @@
 
   function stopReplay() {
     if (!replay) return;
-    cancelAnimationFrame(replay.raf);
+    clearTimeout(replay.timer);
     const v = $video();
     if (v && replay.prevRate != null) v.playbackRate = replay.prevRate;
     replay = null;
@@ -442,16 +454,17 @@
 
     const prevRate = replay && replay.prevRate != null ? replay.prevRate : v.playbackRate;
     stopReplay();
-    replay = { end, start, raf: 0, prevRate: slow ? prevRate : null };
+    replay = { end, start, timer: 0, prevRate: slow ? prevRate : null };
     if (slow) v.playbackRate = 0.75;
     v.currentTime = start;
     const p = v.play();
     if (p && p.catch) p.catch(() => {});
 
-    const tick = () => {
+    // A timer (not animation frames) so the stop is on time even when the page draws few frames.
+    const check = () => {
       if (!replay) return;
       const ct = v.currentTime;
-      if (ct >= replay.end) {
+      if (ct >= replay.end - 0.01) {
         v.pause();
         stopReplay();
         return;
@@ -460,9 +473,10 @@
         stopReplay(); // you jumped somewhere else
         return;
       }
-      replay.raf = requestAnimationFrame(tick);
+      const msLeft = ((replay.end - ct) / (v.playbackRate || 1)) * 1000;
+      replay.timer = setTimeout(check, Math.max(5, Math.min(200, msLeft - 15)));
     };
-    replay.raf = requestAnimationFrame(tick);
+    replay.timer = setTimeout(check, 30);
 
     if (i < 0) showToast('↺ Last 3 seconds (subtitle timing not loaded yet)');
     else if (slow) showToast('↺ Slow replay 0.75×');

@@ -6,6 +6,7 @@
   const $ = (id) => document.getElementById(id);
   let state = { enabled: false, current: null, sessions: [] };
   let statusTimer = 0;
+  const plural = (n) => `${n} item${n === 1 ? '' : 's'}`;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -31,12 +32,24 @@
   }
 
   async function copy(text, label) {
+    let ok = false;
     try {
       await navigator.clipboard.writeText(text);
-      status(label || 'Copied');
+      ok = true;
     } catch (_) {
-      status('Could not copy');
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
+      document.body.append(ta);
+      ta.select();
+      try {
+        ok = document.execCommand('copy');
+      } catch (_) {
+        ok = false;
+      }
+      ta.remove();
     }
+    status(ok ? label || 'Copied' : 'Could not copy');
   }
 
   const dateLabel = (ms) =>
@@ -144,7 +157,7 @@
       const actions = el('div', 'actions');
       const copyBtn = el('button', null, 'Copy all');
       copyBtn.type = 'button';
-      copyBtn.addEventListener('click', () => copy(sessionLine(s), `Copied ${s.items.length} items`));
+      copyBtn.addEventListener('click', () => copy(sessionLine(s), `Copied ${plural(s.items.length)}`));
       const saveBtn = el('button', null, 'Save file');
       saveBtn.type = 'button';
       saveBtn.addEventListener('click', async () => {
@@ -202,11 +215,11 @@
 
   $('toggle').addEventListener('click', async () => {
     const r = await send({ type: 'setEnabled', on: !state.enabled });
-    if (r && r.saved && r.saved.filename) status(`Saved ${r.saved.count} items to Downloads/${r.saved.filename}`);
+    if (r && r.saved && r.saved.filename) status(`Saved ${plural(r.saved.count)} to Downloads/${r.saved.filename}`);
   });
 
   $('copy-all').addEventListener('click', () => {
-    if (state.current) copy(sessionLine(state.current), `Copied ${state.current.items.length} items`);
+    if (state.current) copy(sessionLine(state.current), `Copied ${plural(state.current.items.length)}`);
   });
 
   $('save-file').addEventListener('click', async () => {
