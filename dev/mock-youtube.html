@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Italiano facile, episodio 1 - YouTube</title>
+    <link rel="stylesheet" href="../content/content.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #0f0f0f;
+        color: #f1f1f1;
+        font: 14px/1.4 Roboto, Arial, sans-serif;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 16px;
+        align-items: start;
+      }
+      /* fake player, same class names as YouTube */
+      #movie_player {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #1f3b2d, #3b1f24);
+      }
+      .html5-video-container video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      .fake-clock {
+        position: absolute;
+        right: 14px;
+        bottom: 12px;
+        font: 600 13px monospace;
+        color: #ddd;
+      }
+      .ytp-caption-window-container {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .caption-window {
+        position: absolute;
+        bottom: 12%;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        pointer-events: auto;
+        cursor: move;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .caption-visual-line {
+        display: block;
+      }
+      .ytp-caption-segment {
+        padding: 2px 6px;
+        background: rgba(8, 8, 8, 0.75);
+        color: #fff;
+        font-size: 26px;
+      }
+      h1.ytd-watch-metadata {
+        margin: 12px 0 4px;
+        font-size: 20px;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0;
+      }
+      .controls button {
+        padding: 6px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: #272727;
+        color: #fff;
+        cursor: pointer;
+      }
+      .log {
+        padding: 10px;
+        border-radius: 8px;
+        background: #1c1c1c;
+        font: 12px/1.4 monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      iframe {
+        width: 100%;
+        height: 760px;
+        border: 0;
+        border-radius: 12px;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <main>
+        <div id="movie_player" class="html5-video-player">
+          <div class="html5-video-container"><video class="html5-main-video"></video></div>
+          <div class="ytp-caption-window-container" id="captions"></div>
+          <div class="fake-clock" id="clock">0:00.0</div>
+        </div>
+        <h1 class="ytd-watch-metadata"><yt-formatted-string>Italiano facile, episodio 1</yt-formatted-string></h1>
+        <div class="controls">
+          <button id="play" type="button">Play / Pause</button>
+          <button id="cmd" type="button">Ctrl+Shift+X (fake)</button>
+          <button id="reset" type="button">Reset storage</button>
+        </div>
+        <p>Clicks on the video toggle play like YouTube does. Dragging the subtitle box moves it, like YouTube.</p>
+        <div class="log" id="log"></div>
+      </main>
+      <aside><iframe id="panel" title="Side panel" allow="clipboard-write"></iframe></aside>
+    </div>
+
+    <script src="mock-chrome.js"></script>
+    <script>
+      // Serve a fake subtitle track at /api/timedtext, the way YouTube's player would download it.
+      (() => {
+        const realFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.includes('/api/timedtext')) {
+            const body = JSON.stringify({ events: window.MOCK_CUES_JSON3 });
+            return Promise.resolve(new Response(body, { headers: { 'content-type': 'application/json' } }));
+          }
+          return realFetch(input, init);
+        };
+      })();
+    </script>
+    <script src="../content/page-hook.js"></script>
+    <script src="../lib/format.js"></script>
+    <script src="../background.js"></script>
+    <script src="../content/content.js"></script>
+    <script src="mock-youtube.js"></script>
+  </body>
+</html>

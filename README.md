@@ -34,6 +34,7 @@ The keys only work while capture is on. They're ignored while you type in YouTub
 or comments. YouTube's subtitles (CC) must be on.
 
 - The word under the mouse is highlighted, so you can see what a click will grab.
+- Words joined by an apostrophe stay whole: *c'entra*, *un'ora*, *dov'è*, *l'acqua*.
 - A small "Copied ✓" message fades away by itself.
 - The toolbar icon shows how many items the session has.
 - Duplicates are skipped. They are still copied, but not saved twice.
@@ -90,7 +91,7 @@ Downloads folder. Nothing is sent anywhere. The extension only runs on `www.yout
 | `sidepanel/` | The side panel |
 | `lib/format.js` | The one-line format, file names and times, shared by the background and the side panel |
 | `tools/make-icons.ps1` | Draws the icons |
-| `dev/mock-youtube.html` | A fake YouTube page for testing without YouTube |
+| `dev/` | A fake YouTube page and a small server for testing without YouTube |
 
 If the subtitle timing can't be read (for example after a YouTube change), capture still works
 from the text on screen, and <kbd>R</kbd> replays the last 3 seconds instead.
@@ -102,8 +103,9 @@ half a sentence.
 
 - After editing, click the reload button on Fliwyee's card in `chrome://extensions`, then
   reload the YouTube tab.
-- Test page: serve the folder (for example `py -m http.server 8765`) and open
+- Test page: run `py dev/serve.py` in this folder and open
   `http://localhost:8765/dev/mock-youtube.html?v=demo123`. It fakes the YouTube player,
   subtitles and the parts of the Chrome extension API Fliwyee uses, and shows the side panel
-  next to it.
+  next to it. The log under the player shows the session, the clipboard, the written file and
+  anything that leaked through to "YouTube".
 - Icons: `powershell -ExecutionPolicy Bypass -File tools\make-icons.ps1`
