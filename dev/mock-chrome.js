@@ -11,11 +11,23 @@
   };
 
   const data = {};
-  const log = { downloads: [], badge: '', clipboard: [], tabsCreated: [], tabsUpdated: [], sent: [] };
+  const log = {
+    downloads: [],
+    badge: '',
+    badgeColor: '',
+    title: '',
+    clipboard: [],
+    tabsCreated: [],
+    tabsUpdated: [],
+    sent: [],
+    scripted: [],
+    shown: [],
+  };
 
   const onChanged = event();
   const onMessage = event();
   const onCommand = event();
+  const onUpdated = event();
 
   function dispatchMessage(msg) {
     return new Promise((resolve) => {
@@ -75,7 +87,10 @@
       },
     },
     tabs: {
-      async query() {
+      onUpdated,
+      // AI-site queries (an array of patterns) return window.mockAiTabs; anything else the YouTube tab.
+      async query(q) {
+        if (q && Array.isArray(q.url)) return clone(window.mockAiTabs || []);
         return [{ id: 1, windowId: 1, url: `https://www.youtube.com/watch${location.search}` }];
       },
       async update(id, props) {
@@ -84,32 +99,58 @@
       },
       async create(props) {
         log.tabsCreated.push(props);
-        return { id: 2 };
+        const tab = { id: 2, windowId: 1, pendingUrl: props.url };
+        setTimeout(() => onUpdated.listeners.slice().forEach((fn) => fn(2, { status: 'complete' }, tab)), 50);
+        return tab;
       },
       sendMessage(_tabId, msg) {
         return dispatchMessage(msg);
       },
     },
     windows: { async update() {} },
+    // The "AI tab" is this page: the injected function runs here, against the fake message box.
+    scripting: {
+      async executeScript({ target, func, args }) {
+        log.scripted.push({ tabId: target.tabId, args });
+        return [{ result: await func(...(args || [])) }];
+      },
+    },
     downloads: {
       async download(opts) {
         const text = decodeURIComponent(String(opts.url).replace(/^data:[^,]*,/, ''));
         log.downloads.push({ filename: opts.filename, conflictAction: opts.conflictAction, text });
         return log.downloads.length;
       },
+      async search({ id }) {
+        return log.downloads[id - 1] ? [{ id, exists: true, state: 'complete' }] : [];
+      },
+      show(id) {
+        log.shown.push(id);
+      },
+      showDefaultFolder() {
+        log.shown.push('folder');
+      },
     },
     action: {
       async setBadgeText({ text }) {
         log.badge = text;
       },
-      async setBadgeBackgroundColor() {},
+      async setBadgeBackgroundColor({ color }) {
+        log.badgeColor = color;
+      },
       async setBadgeTextColor() {},
+      async setTitle({ title }) {
+        log.title = title;
+      },
     },
     sidePanel: { setPanelBehavior: async () => {} },
     commands: {
       onCommand,
       async getAll() {
-        return [{ name: 'toggle-capture', shortcut: 'Ctrl+Shift+X', description: 'Turn subtitle capture on / off' }];
+        return [
+          { name: 'toggle-capture', shortcut: 'Ctrl+Shift+X' },
+          { name: 'end-session', shortcut: 'Ctrl+Shift+E' },
+        ];
       },
     },
   };

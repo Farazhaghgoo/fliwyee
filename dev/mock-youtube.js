@@ -8,8 +8,11 @@
     { start: 6.5, end: 10.0, lines: ["Ci metto un'ora", 'ad arrivare in ufficio.'] },
     { start: 10.0, end: 14.0, lines: ["Che c'entra questo con me?"] },
     { start: 14.0, end: 18.0, lines: ['Avere a che fare con lui è difficile.'] },
+    // like auto-generated subtitles: two lines on screen at once (the older one on top)
+    { start: 18.0, end: 22.5, lines: ['e poi siamo andati'] },
+    { start: 20.0, end: 24.0, lines: ['a mangiare una pizza'] },
   ];
-  const DURATION = 20;
+  const DURATION = 26;
   window.MOCK_CUES_JSON3 = CUES.map((c) => ({
     tStartMs: Math.round(c.start * 1000),
     dDurationMs: Math.round((c.end - c.start) * 1000),
@@ -64,19 +67,20 @@
 
   // ---------- subtitles, rendered like YouTube ----------
   const container = document.getElementById('captions');
-  let shown = null;
+  let shown = '';
   function render() {
     const t = video.currentTime;
-    const cue = CUES.find((c) => t >= c.start && t < c.end) || null;
-    if (cue !== shown) {
-      shown = cue;
+    const active = CUES.filter((c) => t >= c.start && t < c.end);
+    const key = active.map((c) => c.start).join(',');
+    if (key !== shown) {
+      shown = key;
       container.textContent = '';
-      if (cue) {
+      if (active.length) {
         const win = document.createElement('div');
         win.className = 'caption-window ytp-caption-window-bottom';
         const text = document.createElement('span');
         text.className = 'captions-text';
-        for (const line of cue.lines) {
+        for (const line of active.flatMap((c) => c.lines)) {
           const vl = document.createElement('span');
           vl.className = 'caption-visual-line';
           const seg = document.createElement('span');
@@ -109,6 +113,9 @@
   // ---------- controls & log ----------
   document.getElementById('play').addEventListener('click', () => (video.paused ? video.play() : video.pause()));
   document.getElementById('cmd').addEventListener('click', () => window.fakeCommand('toggle-capture'));
+  document.getElementById('end').addEventListener('click', () => window.fakeCommand('end-session'));
+  // Pretend a ChatGPT tab is open; the fake message box below stands in for it.
+  window.mockAiTabs = [{ id: 5, windowId: 1, url: 'https://chatgpt.com/c/demo', lastAccessed: 100 }];
   document.getElementById('reset').addEventListener('click', async () => {
     await chrome.storage.local.set({ enabled: false, current: null, sessions: [] });
     window.fakeLog.downloads.length = 0;
@@ -121,7 +128,7 @@
     const d = window.fakeData;
     const items = d.current ? d.current.items.map((i) => `  [${i.type}] ${i.text}${i.context ? `  <- ${i.context}` : ''}  @${i.time}s`) : [];
     logEl.textContent = [
-      `enabled: ${!!d.enabled}   badge: "${window.fakeLog.badge}"   past sessions: ${(d.sessions || []).length}`,
+      `enabled: ${!!d.enabled}   badge: "${window.fakeLog.badge}" ${window.fakeLog.badgeColor}   past sessions: ${(d.sessions || []).length}`,
       `current session (${items.length}):`,
       ...items,
       `clipboard: ${JSON.stringify(window.fakeLog.clipboard.slice(-3))}`,
