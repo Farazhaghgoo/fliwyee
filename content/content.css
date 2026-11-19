@@ -1,0 +1,103 @@
+/* Fliwyee: only active while <html> has .fliwyee-on (capture is ON). */
+
+html.fliwyee-on .caption-window,
+html.fliwyee-on .caption-window * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+html.fliwyee-on .caption-window {
+  pointer-events: auto !important;
+  cursor: text !important;
+}
+
+html.fliwyee-on .ytp-caption-segment {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+
+html.fliwyee-on .caption-window ::selection {
+  background: rgba(255, 210, 0, 0.6);
+  color: #000;
+}
+
+/* word under the mouse */
+.fliwyee-hl {
+  position: absolute;
+  z-index: 69;
+  display: none;
+  pointer-events: none;
+  border-radius: 3px;
+  background: rgba(255, 210, 0, 0.3);
+  box-shadow: 0 0 0 1px rgba(255, 210, 0, 0.85);
+}
+html.fliwyee-on .fliwyee-hl.show {
+  display: block;
+}
+
+/* "Fliwyee · 7" in the corner of the player */
+.fliwyee-pill {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 70;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font: 600 12px/1 Roboto, Arial, sans-serif;
+  pointer-events: none;
+}
+html.fliwyee-on .fliwyee-pill {
+  display: flex;
+}
+.fliwyee-pill .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2ecc71;
+}
+
+/* small message that fades away */
+.fliwyee-toast {
+  position: absolute;
+  top: 12%;
+  left: 50%;
+  z-index: 71;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(80%, 640px);
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(20, 20, 20, 0.88);
+  color: #fff;
+  font: 500 14px/1.35 Roboto, Arial, sans-serif;
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+.fliwyee-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+.fliwyee-toast .msg {
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+.fliwyee-toast button {
+  all: unset;
+  flex: none;
+  cursor: pointer;
+  color: #7ddc9b;
+  font-weight: 700;
+}
+.fliwyee-toast button:hover {
+  text-decoration: underline;
+}
