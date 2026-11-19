@@ -90,10 +90,11 @@ async function removeItem(sessionId, id) {
 
 // ---------- the session file ----------
 
-// Writes (or rewrites) the session's file: Downloads/italian-subtitles/fliwyee_<start>.txt
+// Writes (or rewrites) the session's file: Downloads/italian-subtitles/fliwyee_<start>.html
+// A small web page: double-click it, and every minute is a working link to that moment.
 async function writeFile(session) {
   const filename = F.sessionFilename(session);
-  const url = 'data:text/plain;charset=utf-8,' + encodeURIComponent(F.sessionText(session));
+  const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(F.sessionHtml(session));
   const downloadId = await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
   session.filename = filename;
   session.downloadId = downloadId;
@@ -106,7 +107,7 @@ async function saveFile(sessionId) {
   if (!s || !s.items.length) return { status: 'empty' };
   await writeFile(s);
   await chrome.storage.local.set(isCurrent ? { current: s } : { sessions: st.sessions });
-  return { status: 'saved', filename: s.filename };
+  return { status: 'saved', filename: s.filename, downloadId: s.downloadId };
 }
 
 async function showFile(sessionId) {
@@ -345,9 +346,55 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && (changes.enabled || changes.current)) refreshBadge();
 });
 
+// Runs inside an open YouTube tab after Fliwyee is installed or updated. That tab still has the
+// old Fliwyee (or none), so ask for a reload.
+function showUpdateNotice(reason) {
+  if (document.getElementById('fliwyee-update')) return;
+  const bar = document.createElement('div');
+  bar.id = 'fliwyee-update';
+  bar.style.cssText =
+    'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;' +
+    'align-items:center;gap:14px;padding:10px 12px 10px 16px;border-radius:10px;background:#1b1b1b;' +
+    'color:#fff;font:500 14px/1.3 Roboto,Arial,sans-serif;box-shadow:0 4px 20px rgba(0,0,0,.35);';
+  const msg = document.createElement('span');
+  msg.textContent =
+    reason === 'install'
+      ? 'Fliwyee is installed. Reload this tab to start using it.'
+      : 'Fliwyee was updated. Reload this tab to use the new version.';
+  const btn = (label, css, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.style.cssText = 'border:0;border-radius:6px;cursor:pointer;font:600 14px Roboto,Arial,sans-serif;' + css;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  bar.append(
+    msg,
+    btn('Reload', 'padding:6px 12px;background:#2ecc71;color:#0d1a12;', () => location.reload()),
+    btn('✕', 'padding:4px 8px;background:transparent;color:#bbb;', () => bar.remove())
+  );
+  document.documentElement.appendChild(bar);
+}
+
 // Capture is off when Chrome starts. An open session stays open until you end it.
 chrome.runtime.onStartup.addListener(() => serial(() => setEnabled(false)));
-chrome.runtime.onInstalled.addListener(() => refreshBadge());
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  refreshBadge();
+  if (details.reason !== 'install' && details.reason !== 'update') return;
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: 'https://www.youtube.com/*' });
+  } catch (_) {
+    tabs = [];
+  }
+  for (const tab of tabs) {
+    chrome.scripting
+      .executeScript({ target: { tabId: tab.id }, func: showUpdateNotice, args: [details.reason] })
+      .catch(() => {}); // e.g. a tab that is still loading
+  }
+});
 
 // Clicking the toolbar icon opens the side panel.
 if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {

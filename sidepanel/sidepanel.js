@@ -74,6 +74,29 @@
     } else status(copied ? 'Copied. Paste it in your AI chat (Ctrl+V).' : 'Could not reach your AI chat.', 4000);
   }
 
+  // Save the latest version of the session's page, then open it (it opens in your browser).
+  async function openFile(sessionId) {
+    status('Saving…', 5000);
+    const r = await send({ type: 'saveFile', sessionId });
+    if (!r || r.status !== 'saved') {
+      status('Could not save the file');
+      return;
+    }
+    // wait until the file is written
+    for (let i = 0; i < 30; i++) {
+      const [d] = await chrome.downloads.search({ id: r.downloadId }).catch(() => []);
+      if (d && d.state === 'complete') break;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    try {
+      await chrome.downloads.open(r.downloadId);
+      status(`Opened Downloads/${r.filename}`);
+    } catch (_) {
+      send({ type: 'showFile', sessionId });
+      status(`Saved to Downloads/${r.filename}. Double-click it to open.`, 4000);
+    }
+  }
+
   // Jump to the moment in the video: reuse an open tab with that video, otherwise open it.
   async function openAt(item) {
     const url = F.watchUrl(item);
@@ -157,7 +180,7 @@
     empty.textContent = state.enabled
       ? 'Capturing. Click a word in the YouTube subtitles.'
       : 'Turn Fliwyee on, then click a word in the YouTube subtitles.';
-    for (const id of ['ask-all', 'copy-all', 'save-file', 'end-session']) $(id).disabled = items.length === 0;
+    for (const id of ['ask-all', 'copy-all', 'open-file', 'end-session']) $(id).disabled = items.length === 0;
     $('show-file').disabled = !(cur && cur.downloadId != null);
   }
 
@@ -177,11 +200,8 @@
       actions.append(
         button('Ask AI about all', 'primary', () => ask(F.sessionPrompt(s, state.settings))),
         button('Copy all', null, () => copy(F.sessionText(s), `Copied ${F.plural(s.items.length)}`)),
-        button('Save file', null, async () => {
-          const r = await send({ type: 'saveFile', sessionId: s.id });
-          status(r && r.status === 'saved' ? `Saved to Downloads/${r.filename}` : 'Could not save the file');
-        }),
-        button('Show file', null, () => send({ type: 'showFile', sessionId: s.id })),
+        button('Open file', null, () => openFile(s.id), 'Save the file and open it'),
+        button('Show in folder', null, () => send({ type: 'showFile', sessionId: s.id })),
         button('Delete', 'danger', () => {
           if (confirm('Delete this session from Fliwyee? A file you already saved in Downloads stays.')) {
             send({ type: 'deleteSession', sessionId: s.id });
@@ -266,10 +286,7 @@
     if (state.current) copy(F.sessionText(state.current), `Copied ${F.plural(state.current.items.length)}`);
   });
 
-  $('save-file').addEventListener('click', async () => {
-    const r = await send({ type: 'saveFile' });
-    status(r && r.status === 'saved' ? `Saved to Downloads/${r.filename}` : 'Could not save the file');
-  });
+  $('open-file').addEventListener('click', () => openFile(state.current && state.current.id));
 
   $('show-file').addEventListener('click', () => send({ type: 'showFile' }));
 
