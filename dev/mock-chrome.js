@@ -22,6 +22,7 @@
     sent: [],
     scripted: [],
     shown: [],
+    opened: [],
   };
 
   const onChanged = event();
@@ -126,6 +127,9 @@
       },
       show(id) {
         log.shown.push(id);
+      },
+      async open(id) {
+        log.opened.push(id);
       },
       showDefaultFolder() {
         log.shown.push('folder');
