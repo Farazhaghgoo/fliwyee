@@ -6,7 +6,8 @@ A small Chrome extension for studying Italian with YouTube. Turn it on, click a 
 subtitles (or drag across a phrase, or press <kbd>S</kbd> for the whole line). It's copied and
 saved to your study session, together with its sentence and the moment in the video. Press
 <kbd>Q</kbd> and Fliwyee takes you to your AI chat with a ready prompt about it. When you end the
-session, it's saved as a clear text file: one sentence per line, with the words you took from it.
+session, it's saved as a small web page: one sentence per line, your words highlighted, and every
+minute a working link back to that moment in the video.
 
 ## Install
 
@@ -16,8 +17,10 @@ session, it's saved as a clear text file: one sentence per line, with the words 
 4. Pin the Fliwyee icon in the toolbar (puzzle piece → pin).
 5. Reload any YouTube tab that was already open.
 
-**Updating:** click the reload button on Fliwyee's card in `chrome://extensions`, then reload
-your YouTube tabs.
+**Updating:** click the reload button on Fliwyee's card in `chrome://extensions`. Open YouTube
+tabs then show "Fliwyee was updated. Reload this tab": click **Reload** (or press F5). Until you
+do, the old Fliwyee in that tab switches itself off and YouTube works normally. Restarting Chrome
+also works.
 
 ## Use
 
@@ -69,16 +72,22 @@ The prompts are yours to change in the side panel's **Settings**: one for a word
 - Pausing (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>) keeps the session open, also after you
   restart Chrome. Capture itself is always off when Chrome starts.
 - Ending the session (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> or **End session**) writes
-  `Downloads/italian-subtitles/fliwyee_YYYY-MM-DD_HH-MM.txt`. **Save file** writes it at any
-  time and rewrites the same file. **Show file** opens it in its folder.
-- The file has one sentence per line, with its minute and the words you took from it, grouped
-  by video:
+  `Downloads/italian-subtitles/fliwyee_YYYY-MM-DD_HH-MM.html`. **Open file** writes the latest
+  version at any time (it rewrites the same file) and opens it. **Show in folder** opens its
+  folder.
+- The file is a small web page that opens in your browser (double-click it). Grouped by video,
+  one sentence per line, with the words you took from it highlighted:
+
+  | | |
+  |---|---|
+  | **[0:03](#)** | Non posso **fare a meno di** te. |
+  | **[0:10](#)** | Che **c'entra questo** con me? |
+  | **[0:14](#)** | Avere a che fare con lui è difficile. |
+
+  Every minute is a link that plays the video from that moment. All links open in the same
+  YouTube tab. At the bottom, **Plain text** has the same session as text, for copying:
 
   ```
-  Fliwyee · Thu 19 Nov 2026, 15:30 · 5 items
-
-  Italiano facile, episodio 1
-  https://www.youtube.com/watch?v=abc123
   0:03  Non posso fare a meno di te.  →  fare a meno di
   0:10  Che c'entra questo con me?  →  c'entra, c'entra questo
   0:14  Avere a che fare con lui è difficile.
@@ -95,9 +104,9 @@ Click the toolbar icon to open it next to the video.
 - This session, newest first. Each item shows its sentence, the video title and a **▶ 4:12**
   link that jumps to that moment (it opens the video if it's closed). Click an item to copy it
   again, **AI** to ask about it, or ✕ to remove it.
-- **Ask AI about all**, **Copy all** (the file text), **Save file**, **Show file**,
+- **Ask AI about all**, **Copy all** (as plain text), **Open file**, **Show in folder**,
   **End session**.
-- Past sessions can be asked about, copied, saved again, shown or deleted.
+- Past sessions can be asked about, copied, opened, shown in their folder or deleted.
 - Items from auto-generated subtitles get an **auto subs** tag, since that text can contain
   mistakes.
 - **Settings**: which AI to open when none is open, and the three prompts.
