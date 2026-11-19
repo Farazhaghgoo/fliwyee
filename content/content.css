@@ -101,3 +101,6 @@ html.fliwyee-on .fliwyee-pill {
 .fliwyee-toast button:hover {
   text-decoration: underline;
 }
+.fliwyee-toast button + button {
+  color: #c9cdd2;
+}

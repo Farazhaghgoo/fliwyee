@@ -4,6 +4,7 @@
 //   drag across words   -> copy + save the phrase (with its sentence)
 //   S                   -> copy + save the whole subtitle line
 //   R / Shift+R         -> replay the current line (Shift = 0.75x), then pause at its end
+//   Q                   -> ask your AI chat about the last capture (or the line on screen)
 //   Ctrl+Z              -> undo the last capture
 // When capture is OFF nothing changes on YouTube.
 (() => {
@@ -11,12 +12,15 @@
   if (window.__fliwyeeContent) return;
   window.__fliwyeeContent = true;
 
+  const F = window.FliwyeeFormat; // lib/format.js, loaded just before this file
   const ON_CLASS = 'fliwyee-on';
   const WORD_CHAR = /[\p{L}\p{M}\p{N}]/u;
   const APOSTROPHES = "'’";
 
   let enabled = false;
   let sessionCount = 0;
+  let settings = null; // prompts etc., from storage
+  let lastCapture = null; // { id, type, text, context } of the last capture in this tab
   let ui = null; // { player, pill, toast, hl }
   let toastTimer = 0;
   let pressInCaption = false;
@@ -224,6 +228,35 @@
     return i >= 0 ? track.cues[i] : null;
   }
 
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lower = (s) => clean(s).toLocaleLowerCase('it');
+
+  // When was this word / phrase / line said? Auto-generated subtitles show the previous line
+  // too, so look back a few lines for the one that really contains it, and use its start.
+  function startTimeFor(text, type) {
+    const v = $video();
+    const now = v ? v.currentTime : 0;
+    const track = tracks.get(currentVideoId());
+    const cues = track ? track.cues : [];
+    const i = cues.length ? cueIndexAt(cues, now) : -1;
+    if (i < 0) return Math.max(0, now - 3); // no timing data: a few seconds back
+    const first = Math.max(0, i - 4);
+    if (type === 'sentence') {
+      // the on-screen text can hold two lines: take the earliest line that is part of it
+      const shown = lower(text);
+      let best = -1;
+      for (let k = i; k >= first; k--) {
+        if (shown.includes(lower(cues[k].text))) best = k;
+        else if (best >= 0) break;
+      }
+      return cues[best >= 0 ? best : i].start;
+    }
+    const firstWord = lower(text).split(' ')[0];
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRe(firstWord)}($|[^\\p{L}\\p{N}])`, 'u');
+    for (let k = i; k >= first; k--) if (re.test(lower(cues[k].text))) return cues[k].start;
+    return cues[i].start;
+  }
+
   // ---------- on-player UI: pill, toast, highlight ----------
 
   function ensureUi() {
@@ -262,10 +295,12 @@
     const label = document.createElement('span');
     label.textContent = sessionCount ? `Fliwyee · ${sessionCount}` : 'Fliwyee ON';
     ui.pill.append(dot, label);
-    ui.pill.title = 'Capture is on. Ctrl+Shift+X turns it off.';
+    ui.pill.title = 'Capture is on. Ctrl+Shift+X pauses it, Ctrl+Shift+E ends the session.';
   }
 
-  function showToast(message, undoId) {
+  // A small message on the player. Optional buttons: Ask AI (about `askItem`) and Undo.
+  function showToast(message, opts) {
+    const { undoId, askItem, ms } = opts || {};
     const u = ensureUi();
     if (!u) return;
     const t = u.toast;
@@ -274,18 +309,20 @@
     msg.className = 'msg';
     msg.textContent = message;
     t.append(msg);
-    if (undoId) {
+    const button = (label, onClick) => {
       const b = document.createElement('button');
       b.type = 'button';
-      b.textContent = 'Undo';
+      b.textContent = label;
       b.addEventListener('click', (e) => {
         e.stopPropagation();
-        undo(undoId);
+        onClick();
       });
       t.append(b);
-    }
+    };
+    if (askItem) button('Ask AI', () => askAI(askItem));
+    if (undoId) button('Undo', () => undo(undoId));
     t.classList.add('show');
-    hideToastSoon(undoId ? 4000 : 2000);
+    hideToastSoon(ms || (undoId || askItem ? 4000 : 2000));
   }
 
   function hideHighlight() {
@@ -360,9 +397,7 @@
   async function capture(type, text, context) {
     text = clean(text);
     if (!text) return;
-    const v = $video();
     const track = tracks.get(currentVideoId());
-    const cue = currentCue();
     const ctx = type === 'sentence' ? '' : clean(context);
     const item = {
       type,
@@ -370,29 +405,65 @@
       context: ctx === text ? '' : ctx,
       videoId: currentVideoId(),
       title: videoTitle(),
-      time: Math.max(0, Math.floor(cue ? cue.start : (v ? v.currentTime : 0) - 2)),
+      // 1 second before the line starts, so the link plays the whole line
+      time: Math.max(0, Math.floor(startTimeFor(text, type) - 1)),
       auto: !!(track && track.auto),
     };
     const copied = await copyText(text);
     const res = await send({ type: 'capture', item });
     if (!res || res.status === 'gone') return;
-    if (res.status === 'added') showToast(`${copied ? 'Copied ✓' : 'Saved ✓'}  ${text}`, res.id);
-    else if (res.status === 'duplicate') showToast(`${copied ? 'Copied ✓' : 'Already saved'}  ${text}  (already saved)`);
-    else if (res.status === 'off') showToast('Fliwyee is off');
+    if (res.status === 'added' || res.status === 'duplicate') {
+      lastCapture = { id: res.id || null, type: item.type, text: item.text, context: item.context };
+    }
+    if (res.status === 'added') {
+      showToast(`${copied ? 'Copied ✓' : 'Saved ✓'}  ${text}`, { undoId: res.id, askItem: lastCapture });
+    } else if (res.status === 'duplicate') {
+      showToast(`${copied ? 'Copied ✓' : 'Already saved'}  ${text}  (already saved)`, { askItem: lastCapture });
+    } else if (res.status === 'off') showToast('Fliwyee is off');
     else showToast(copied ? `Copied ✓  ${text}  (could not save)` : 'Could not copy or save');
   }
 
-  function captureSentence() {
+  function screenLine() {
     let text = captionText(null);
     if (!text) {
       const cue = currentCue();
       text = cue ? cue.text : '';
     }
+    return text;
+  }
+
+  function captureSentence() {
+    const text = screenLine();
     if (!text) {
       showToast('No subtitle on screen. Turn on CC.');
       return;
     }
     capture('sentence', text, '');
+  }
+
+  // Ask your AI chat: copies the prompt, pauses the video, and Fliwyee switches to the AI tab
+  // you used last (or opens one) and puts the prompt in its message box.
+  async function askAI(item) {
+    let it = item || lastCapture;
+    if (!it) {
+      const line = screenLine();
+      if (!line) {
+        showToast('Click a word first, or turn on CC.');
+        return;
+      }
+      it = { type: 'sentence', text: line, context: '' };
+    }
+    const prompt = F.itemPrompt(it, settings);
+    const v = $video();
+    if (v && !v.paused) v.pause();
+    stopReplay();
+    const copied = await copyText(prompt);
+    showToast('Opening your AI chat…');
+    const res = await send({ type: 'askAI', text: prompt });
+    if (!res || res.status === 'gone') return;
+    if (res.status !== 'ok') showToast(copied ? 'Prompt copied. Paste it in your AI chat (Ctrl+V).' : 'Could not reach your AI chat.');
+    else if (!res.inserted) showToast(`Prompt copied. Paste it in ${res.site} (Ctrl+V).`);
+    else showToast(`Sent to ${res.site}. Press Enter there.`);
   }
 
   function handleRelease(e) {
@@ -415,6 +486,7 @@
   async function undo(id) {
     const res = await send({ type: 'undo', id });
     if (!res || res.status === 'gone') return;
+    if (res.status === 'removed' && lastCapture && lastCapture.id === res.id) lastCapture = null;
     showToast(res.status === 'removed' ? `Removed  ${res.text}` : 'Nothing to undo');
   }
 
@@ -529,6 +601,9 @@
     } else if (noMods && key === 'r') {
       block(e, true);
       replayLine(e.shiftKey);
+    } else if (noMods && !e.shiftKey && key === 'q') {
+      block(e, true);
+      askAI(null);
     } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && key === 'z') {
       block(e, true);
       undo();
@@ -550,7 +625,9 @@
 
   // ---------- on/off state ----------
 
-  function applyEnabled(on, announce, saved) {
+  const visible = () => document.visibilityState === 'visible';
+
+  function applyEnabled(on, announce) {
     enabled = on;
     if (document.documentElement) document.documentElement.classList.toggle(ON_CLASS, on);
     if (on) ensureUi();
@@ -558,15 +635,10 @@
       hideHighlight();
       stopReplay();
     }
-    if (!announce || document.visibilityState !== 'visible') return;
-    if (on) showToast('Fliwyee ON · click a word · drag a phrase · S sentence · R replay');
-    else if (saved && saved.count) {
-      showToast(
-        saved.filename
-          ? `Fliwyee OFF · ${saved.count} saved to Downloads/${saved.folder}`
-          : `Fliwyee OFF · ${saved.count} saved (file could not be written; use the side panel)`
-      );
-    } else showToast('Fliwyee OFF');
+    if (!announce || !visible()) return;
+    if (on) showToast('Fliwyee ON · click a word · drag a phrase · S line · R replay · Q ask AI', { ms: 3000 });
+    else if (sessionCount) showToast(`Fliwyee paused · the session keeps going (${F.plural(sessionCount)})`);
+    else showToast('Fliwyee paused');
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -576,8 +648,18 @@
       sessionCount = cur && cur.items ? cur.items.length : 0;
       updatePill();
     }
-    if (changes.enabled) {
-      applyEnabled(!!changes.enabled.newValue, true, changes.lastSaved && changes.lastSaved.newValue);
+    if (changes.settings) settings = changes.settings.newValue || null;
+    if (changes.enabled) applyEnabled(!!changes.enabled.newValue, true);
+    // The session was ended (Ctrl+Shift+E or the side panel).
+    const saved = changes.lastSaved && changes.lastSaved.newValue;
+    if (saved && changes.current && !changes.current.newValue && visible() && $player()) {
+      lastCapture = null;
+      showToast(
+        saved.filename
+          ? `Session saved · ${F.plural(saved.count)} → Downloads/${saved.folder}`
+          : `Session ended · ${F.plural(saved.count)} (the file could not be written; use the side panel)`,
+        { ms: 3500 }
+      );
     }
   });
 
@@ -594,8 +676,9 @@
     return false;
   });
 
-  chrome.storage.local.get({ enabled: false, current: null }).then((st) => {
+  chrome.storage.local.get({ enabled: false, current: null, settings: null }).then((st) => {
     sessionCount = st.current && st.current.items ? st.current.items.length : 0;
+    settings = st.settings;
     applyEnabled(!!st.enabled, false);
   });
 })();
