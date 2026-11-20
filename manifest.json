@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Fliwyee",
   "short_name": "Fliwyee",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Learning Italian with YouTube, easier: save words and sentences from the subtitles and ask your AI chat about them.",
   "minimum_chrome_version": "121",
   "icons": {
@@ -24,9 +24,11 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["storage", "downloads", "downloads.open", "sidePanel", "clipboardWrite", "scripting"],
+  "permissions": ["storage", "downloads", "downloads.open", "sidePanel", "clipboardWrite", "scripting", "activeTab"],
   "host_permissions": [
     "https://www.youtube.com/*",
+    "https://www.youtube-nocookie.com/*",
+    "https://www.netflix.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*"
@@ -37,28 +39,30 @@
         "default": "Ctrl+Shift+X",
         "mac": "Command+Shift+X"
       },
-      "description": "Pause / resume capture (the session keeps going)"
+      "description": "Pause / resume capture (on other websites, the first press adds Fliwyee to the tab)"
     },
     "end-session": {
       "suggested_key": {
         "default": "Ctrl+Shift+E",
         "mac": "Command+Shift+E"
       },
-      "description": "End the session and save its file"
+      "description": "End the session and save its files"
     }
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
+      "matches": ["https://www.youtube.com/*", "https://www.youtube-nocookie.com/*", "https://www.netflix.com/*"],
       "js": ["content/page-hook.js"],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["lib/format.js", "content/content.js"],
+      "matches": ["https://www.youtube.com/*", "https://www.youtube-nocookie.com/*", "https://www.netflix.com/*"],
+      "js": ["lib/format.js", "content/sites.js", "content/content.js"],
       "css": ["content/content.css"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ]
 }

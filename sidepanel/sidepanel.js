@@ -97,33 +97,31 @@
     }
   }
 
-  // Jump to the moment in the video: reuse an open tab with that video, otherwise open it.
+  // Jump to the moment in the video. Every tab where Fliwyee runs is asked; the one playing that
+  // video jumps and comes to the front. If none has it, the video (or page) opens in a new tab.
   async function openAt(item) {
     const url = F.watchUrl(item);
+    const msg = { type: 'seek', videoId: item.videoId, time: item.time };
     try {
-      const tabs = await chrome.tabs.query({ url: 'https://www.youtube.com/watch*' });
-      const tab = tabs.find((t) => {
-        try {
-          return new URL(t.url).searchParams.get('v') === item.videoId;
-        } catch (_) {
-          return false;
-        }
-      });
-      if (!tab) {
-        await chrome.tabs.create({ url });
+      const tabs = await chrome.tabs.query({});
+      const answers = await Promise.all(
+        tabs.map((t) =>
+          chrome.tabs
+            .sendMessage(t.id, msg)
+            .then((r) => (r && r.ok ? t : null))
+            .catch(() => null)
+        )
+      );
+      const tab = answers.find(Boolean);
+      if (tab) {
+        await chrome.tabs.update(tab.id, { active: true });
+        await chrome.windows.update(tab.windowId, { focused: true });
         return;
       }
-      await chrome.tabs.update(tab.id, { active: true });
-      await chrome.windows.update(tab.windowId, { focused: true });
-      try {
-        const r = await chrome.tabs.sendMessage(tab.id, { type: 'seek', videoId: item.videoId, time: item.time });
-        if (r && r.ok) return;
-      } catch (_) {
-        /* the tab was opened before Fliwyee was (re)loaded: load it at the right moment */
-      }
-      await chrome.tabs.update(tab.id, { url });
+      if (url) await chrome.tabs.create({ url });
+      if (item.site === 'web') status(`Opened the page. The moment is at ${F.fmtTime(item.time)}.`, 4000);
     } catch (_) {
-      chrome.tabs.create({ url });
+      if (url) chrome.tabs.create({ url });
     }
   }
 
@@ -335,6 +333,7 @@
     $('sc-toggle').textContent = sc('toggle-capture', 'Ctrl+Shift+X');
     $('sc-end').textContent = sc('end-session', 'Ctrl+Shift+E');
     $('sc-end-2').textContent = sc('end-session', 'Ctrl+Shift+E');
+    $('sc-toggle-2').textContent = sc('toggle-capture', 'Ctrl+Shift+X');
   }
 
   // ---------- the editor (only when you press N on the video, or click ✎) ----------

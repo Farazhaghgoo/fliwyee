@@ -13,6 +13,7 @@ importScripts('lib/format.js');
 const F = self.FliwyeeFormat;
 const DEFAULTS = { enabled: false, current: null, sessions: [], settings: null };
 const TYPES = new Set(['word', 'phrase', 'sentence']);
+const SITES = new Set(['youtube', 'netflix', 'web']);
 
 // Every state change goes through this queue so two quick actions can't overwrite each other.
 let queue = Promise.resolve();
@@ -32,7 +33,8 @@ function cleanItem(raw) {
     type: TYPES.has(r.type) ? r.type : 'word',
     text: str(r.text, 500),
     context: str(r.context, 1000),
-    videoId: str(r.videoId, 32),
+    site: SITES.has(r.site) ? r.site : 'youtube',
+    videoId: str(r.videoId, 1000), // other websites: the page address
     title: str(r.title, 200),
     time: Number.isFinite(time) && time > 0 ? Math.floor(time) : 0,
     auto: !!r.auto,
@@ -258,6 +260,50 @@ async function toggle() {
   return setEnabled(!st.enabled);
 }
 
+// Is Fliwyee running in this tab?
+async function hasFliwyee(tabId) {
+  try {
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+    return !!(r && r.ok);
+  } catch (_) {
+    return false;
+  }
+}
+
+// Add Fliwyee to a tab (a website where it doesn't run by itself). Your Ctrl+Shift+X gives it
+// permission for this tab ("activeTab"), until the tab goes to another site.
+async function addToTab(tabId) {
+  try {
+    await chrome.scripting.insertCSS({ target: { tabId }, files: ['content/content.css'] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content/page-hook.js'], world: 'MAIN' });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        window.__fliwyeeAnnounce = true;
+      },
+    });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/format.js', 'content/sites.js', 'content/content.js'] });
+    return true;
+  } catch (_) {
+    return false; // e.g. chrome:// pages or the Chrome Web Store
+  }
+}
+
+// Ctrl+Shift+X. In a tab where Fliwyee isn't running (another website, or a YouTube tab whose
+// Fliwyee was cut off by an update), the first press adds it to the tab and turns capture on;
+// after that it pauses / resumes as usual.
+async function toggleFromShortcut(tab) {
+  const url = (tab && tab.url) || '';
+  if (tab && tab.id != null && /^https?:\/\//.test(url) && !(await hasFliwyee(tab.id))) {
+    if (await addToTab(tab.id)) {
+      const st = await getState();
+      if (!st.enabled) await setEnabled(true);
+      return { status: 'added' };
+    }
+  }
+  return toggle();
+}
+
 // ---------- Ask AI ----------
 
 // Runs inside the AI chat page: puts the prompt in the message box (you press Enter yourself).
@@ -435,8 +481,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // answer asynchronously
 });
 
-chrome.commands.onCommand.addListener((command) => {
-  if (command === 'toggle-capture') serial(toggle);
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === 'toggle-capture') serial(() => toggleFromShortcut(tab));
   else if (command === 'end-session') serial(endSession);
 });
 
@@ -483,7 +529,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason !== 'install' && details.reason !== 'update') return;
   let tabs = [];
   try {
-    tabs = await chrome.tabs.query({ url: 'https://www.youtube.com/*' });
+    tabs = await chrome.tabs.query({ url: ['https://www.youtube.com/*', 'https://www.netflix.com/*'] });
   } catch (_) {
     tabs = [];
   }
