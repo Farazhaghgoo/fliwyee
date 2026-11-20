@@ -1,4 +1,4 @@
-// Fliwyee on YouTube (isolated world).
+// Fliwyee on a video page (isolated world). The site details come from content/sites.js.
 // When capture is ON:
 //   click a word        -> copy + save the word (with its sentence)
 //   drag across words   -> copy + save the phrase (with its sentence)
@@ -7,13 +7,15 @@
 //   Q                   -> ask your AI chat about the last capture (or the line on screen)
 //   N                   -> edit the last capture / add a note (opens the editor in the side panel)
 //   Ctrl+Z              -> undo the last capture
-// When capture is OFF nothing changes on YouTube.
+// When capture is OFF nothing changes on the page.
 (() => {
   'use strict';
-  if (window.__fliwyeeContent) return;
-  window.__fliwyeeContent = true;
+  // Already running here? (An old copy cut off by an update doesn't count.)
+  const prev = window.__fliwyeeContent;
+  if (prev && typeof prev.alive === 'function' && prev.alive()) return;
 
-  const F = window.FliwyeeFormat; // lib/format.js, loaded just before this file
+  const F = window.FliwyeeFormat; // lib/format.js
+  const SITE = window.FliwyeeSites.pick(); // content/sites.js
   const ON_CLASS = 'fliwyee-on';
   const WORD_CHAR = /[\p{L}\p{M}\p{N}]/u;
   const APOSTROPHES = "'’";
@@ -22,7 +24,7 @@
   let sessionCount = 0;
   let settings = null; // prompts etc., from storage
   let lastCapture = null; // { id, type, text, context } of the last capture in this tab
-  let ui = null; // { player, pill, toast, hl }
+  let ui = null; // { host, layer, pill, toast, hl, subs, fixed }
   let toastTimer = 0;
   let pressInCaption = false;
   let suppressClick = false;
@@ -31,16 +33,14 @@
   let hlRecheck = 0;
   let replay = null;
   let contextGone = false;
+  let ticker = 0; // keeps the layer and Fliwyee's own subtitles up to date while on
   const tracks = new Map(); // videoId -> { cues: [{start, end, text}], auto }
 
   // ---------- small helpers ----------
 
-  const $player = () => document.querySelector('#movie_player') || document.querySelector('.html5-video-player');
-  const $video = () => {
-    const p = $player();
-    return (p && p.querySelector('video')) || document.querySelector('video');
-  };
-  const currentVideoId = () => new URLSearchParams(location.search).get('v') || '';
+  const $player = () => SITE.player();
+  const $video = () => SITE.video();
+  const currentVideoId = () => SITE.videoId();
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
   const isWordChar = (ch) => !!ch && WORD_CHAR.test(ch);
   // Letters, plus an apostrophe between letters, so c'entra / un'ora / dov'è stay one word.
@@ -51,7 +51,7 @@
   const asElement = (node) => (node ? (node.nodeType === 1 ? node : node.parentElement) : null);
   const captionWindowOf = (node) => {
     const el = asElement(node);
-    return el ? el.closest('.caption-window') : null;
+    return el ? el.closest(SITE.captionWindow) : null;
   };
   const block = (e, preventDefault) => {
     e.stopImmediatePropagation();
@@ -62,26 +62,26 @@
     const t = (e.composedPath && e.composedPath()[0]) || e.target;
     return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ''));
   };
+  const isShown = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
 
-  function videoTitle() {
-    const h1 = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1.ytd-watch-metadata');
-    const fromPage = h1 && clean(h1.textContent);
-    if (fromPage) return fromPage;
-    return clean(document.title.replace(/^\(\d+\)\s*/, '').replace(/\s*-\s*YouTube\s*$/, ''));
+  // Text of one subtitle box, or (no box given) of all subtitle boxes on screen.
+  function captionText(win) {
+    if (win) return SITE.captionText(win);
+    const root = (SITE.id === 'youtube' && $player()) || document;
+    const boxes = Array.from(root.querySelectorAll(SITE.captionWindow)).filter(isShown);
+    const outer = boxes.filter((b) => !boxes.some((o) => o !== b && o.contains(b)));
+    return clean(outer.map((b) => SITE.captionText(b)).join(' '));
   }
 
-  // Text of the subtitles on screen. With a caption window: just that window.
-  function captionText(win) {
-    const root = win || $player() || document;
-    const lines = root.querySelectorAll('.caption-visual-line');
-    if (lines.length) {
-      return clean(
-        Array.from(lines)
-          .map((line) => Array.from(line.querySelectorAll('.ytp-caption-segment')).map((s) => s.textContent).join(''))
-          .join(' ')
-      );
-    }
-    return clean(Array.from(root.querySelectorAll('.ytp-caption-segment')).map((s) => s.textContent).join(' '));
+  // Jump in the video. Netflix breaks when the time is changed directly, so there Fliwyee asks
+  // Netflix's own player (page-hook.js does that inside the page).
+  function seekTo(v, t) {
+    const time = Math.max(0, t);
+    if (SITE.seek === 'netflix') window.postMessage({ __fliwyee: 'netflix-seek', time }, location.origin);
+    else v.currentTime = time;
   }
 
   // ---------- words under the mouse ----------
@@ -102,7 +102,7 @@
     const c = caretAt(x, y);
     if (!c || !c.node || c.node.nodeType !== Node.TEXT_NODE) return null;
     const parent = c.node.parentElement;
-    if (!parent || !parent.closest('.ytp-caption-segment')) return null;
+    if (!parent || !parent.closest(SITE.textSelector)) return null;
     const text = c.node.data;
     let i = Math.min(c.offset, text.length);
     if (!inWord(text, i) && inWord(text, i - 1)) i -= 1;
@@ -138,7 +138,9 @@
     return out.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}'’]+$/u, '');
   }
 
-  // ---------- subtitle timing (from page-hook.js) ----------
+  // ---------- subtitle timing ----------
+  // From the subtitle file the player downloads (page-hook.js: YouTube, Netflix), or from the
+  // video's own subtitle track (other websites).
 
   function decodeEntities(s) {
     return String(s)
@@ -148,9 +150,11 @@
       .replace(/&apos;/g, "'")
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&');
   }
 
+  // YouTube json3
   function parseJson3(data) {
     const cues = [];
     for (const ev of (data && data.events) || []) {
@@ -163,20 +167,55 @@
     return cues;
   }
 
+  // TTML times: "12345t" (ticks), "1.5s", "00:01:02.345", "00:01:02:12" (frames)
+  function ttmlTime(v, tickRate, frameRate) {
+    const s = String(v || '').trim();
+    let m = /^(\d+(?:\.\d+)?)(h|m|s|ms|f|t)$/.exec(s);
+    if (m) {
+      const n = parseFloat(m[1]);
+      return { h: n * 3600, m: n * 60, s: n, ms: n / 1000, f: n / frameRate, t: n / tickRate }[m[2]];
+    }
+    m = /^(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(s);
+    if (m) return +m[1] * 3600 + +m[2] * 60 + +m[3] + (m[4] ? parseFloat(`0.${m[4]}`) : 0);
+    m = /^(\d+):(\d{2}):(\d{2}):(\d+)$/.exec(s);
+    if (m) return +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / frameRate;
+    return NaN;
+  }
+
+  // YouTube srv3 / srv1, and TTML (Netflix and many others)
   function parseXml(xml) {
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    const rootEl = doc.documentElement;
     const cues = [];
-    for (const p of doc.querySelectorAll('p')) {
+    const textOfNode = (node) => {
+      const copy = node.cloneNode(true);
+      for (const br of Array.from(copy.getElementsByTagNameNS('*', 'br'))) br.replaceWith(' ');
+      return clean(decodeEntities(copy.textContent));
+    };
+    if (rootEl && rootEl.localName === 'tt') {
+      const attr = (name) => rootEl.getAttribute(`ttp:${name}`) || rootEl.getAttribute(name);
+      const tickRate = parseFloat(attr('tickRate')) || 10000000;
+      const frameRate = parseFloat(attr('frameRate')) || 30;
+      for (const p of Array.from(doc.getElementsByTagNameNS('*', 'p'))) {
+        const start = ttmlTime(p.getAttribute('begin'), tickRate, frameRate);
+        let end = ttmlTime(p.getAttribute('end'), tickRate, frameRate);
+        if (!Number.isFinite(end)) end = start + (ttmlTime(p.getAttribute('dur'), tickRate, frameRate) || 0);
+        const text = textOfNode(p);
+        if (text && Number.isFinite(start)) cues.push({ start, end, text });
+      }
+      return cues;
+    }
+    for (const p of Array.from(doc.getElementsByTagNameNS('*', 'p'))) {
       // srv3: <p t="ms" d="ms">
-      const text = clean(decodeEntities(p.textContent));
+      const text = textOfNode(p);
       if (!text) continue;
       const start = (Number(p.getAttribute('t')) || 0) / 1000;
       cues.push({ start, end: start + (Number(p.getAttribute('d')) || 0) / 1000, text });
     }
     if (!cues.length) {
-      for (const t of doc.querySelectorAll('text')) {
+      for (const t of Array.from(doc.getElementsByTagNameNS('*', 'text'))) {
         // srv1: <text start="s" dur="s">
-        const text = clean(decodeEntities(t.textContent));
+        const text = textOfNode(t);
         if (!text) continue;
         const start = Number(t.getAttribute('start')) || 0;
         cues.push({ start, end: start + (Number(t.getAttribute('dur')) || 0), text });
@@ -185,10 +224,32 @@
     return cues;
   }
 
+  // WebVTT
+  function vttTime(s) {
+    const m = /^(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})$/.exec(String(s || '').trim());
+    return m ? (+m[1] || 0) * 3600 + +m[2] * 60 + +m[3] + +m[4].padEnd(3, '0') / 1000 : NaN;
+  }
+
+  function parseVtt(text) {
+    const cues = [];
+    for (const block of String(text).replace(/\r/g, '').split(/\n{2,}/)) {
+      const lines = block.split('\n');
+      const i = lines.findIndex((l) => l.includes('-->'));
+      if (i < 0) continue;
+      const [a, b] = lines[i].split('-->').map((x) => x.trim().split(/\s+/)[0]);
+      const start = vttTime(a);
+      const end = vttTime(b);
+      const body = clean(decodeEntities(lines.slice(i + 1).join(' ').replace(/<[^>]+>/g, '')));
+      if (body && Number.isFinite(start)) cues.push({ start, end: Number.isFinite(end) ? end : start, text: body });
+    }
+    return cues;
+  }
+
   function parseCaptions(body) {
-    const trimmed = String(body || '').trimStart();
+    const trimmed = String(body || '').replace(/^﻿/, '').trimStart();
     let cues = [];
     if (trimmed.startsWith('{')) cues = parseJson3(JSON.parse(trimmed));
+    else if (trimmed.startsWith('WEBVTT')) cues = parseVtt(trimmed);
     else if (trimmed.startsWith('<')) cues = parseXml(trimmed);
     return cues.sort((a, b) => a.start - b.start);
   }
@@ -199,7 +260,7 @@
       const url = new URL(e.data.url, location.href);
       const cues = parseCaptions(e.data.body);
       if (!cues.length) return;
-      const vid = url.searchParams.get('v') || currentVideoId();
+      const vid = (SITE.id === 'youtube' && url.searchParams.get('v')) || currentVideoId();
       tracks.set(vid, { cues, auto: url.searchParams.get('kind') === 'asr' });
     } catch (_) {
       /* not a format we know: fall back to on-screen text */
@@ -258,29 +319,142 @@
     return cues[i].start;
   }
 
-  // ---------- on-player UI: pill, toast, highlight ----------
+  // ---------- Fliwyee's own subtitle line (other websites) ----------
+  // Some pages show subtitles in a way that can't be clicked (the browser draws them). There,
+  // Fliwyee hides that drawing while capture is on and shows the same text itself, clickable.
+
+  let ownTrack = null; // { track, prevMode } of the subtitle track whose drawing Fliwyee hid
+  let ownKey = '';
+
+  const cueText = (c) => clean(decodeEntities(String(c.text || '').replace(/<[^>]+>/g, '')));
+
+  function subtitleTracks(v) {
+    return Array.from((v && v.textTracks) || []).filter((t) => t.kind === 'subtitles' || t.kind === 'captions');
+  }
+
+  function pageCaptionsShown() {
+    return Array.from(document.querySelectorAll(SITE.captionWindow)).some(
+      (el) => !el.classList.contains('fliwyee-subs-line') && isShown(el) && clean(el.textContent)
+    );
+  }
+
+  function restoreOwnTrack() {
+    if (ownTrack) {
+      try {
+        ownTrack.track.mode = ownTrack.prevMode;
+      } catch (_) {
+        /* the track is gone */
+      }
+      ownTrack = null;
+    }
+    ownKey = '';
+    if (ui && ui.subs) ui.subs.textContent = '';
+  }
+
+  function updateOwnSubtitles() {
+    if (!SITE.ownSubtitles) return;
+    const v = $video();
+    const list = subtitleTracks(v);
+    // timing for R and the saved minute: any track with its lines loaded
+    const timing = list.find((t) => t.mode !== 'disabled' && t.cues && t.cues.length);
+    if (timing) {
+      const vid = currentVideoId();
+      const known = tracks.get(vid);
+      if (!known || known.from !== timing || known.count !== timing.cues.length) {
+        const cues = Array.from(timing.cues)
+          .map((c) => ({ start: c.startTime, end: c.endTime, text: cueText(c) }))
+          .filter((c) => c.text)
+          .sort((a, b) => a.start - b.start);
+        tracks.set(vid, { cues, auto: false, from: timing, count: timing.cues.length });
+      }
+    }
+    if (!enabled || !v || pageCaptionsShown()) return restoreOwnTrack();
+    const showing = list.find((t) => t.mode === 'showing');
+    if (showing) {
+      if (ownTrack && ownTrack.track !== showing) restoreOwnTrack();
+      ownTrack = { track: showing, prevMode: 'showing' };
+      showing.mode = 'hidden'; // keeps its lines loaded, the browser just stops drawing them
+    }
+    const track = ownTrack && ownTrack.track;
+    const u = ensureUi();
+    if (!track || !u) return;
+    const now = v.currentTime;
+    const active = Array.from(track.cues || []).filter((c) => c.startTime <= now && now < c.endTime);
+    const lines = active.flatMap((c) => cueText({ text: String(c.text || '').replace(/\n/g, '\u0000') }).split('\u0000'));
+    const key = lines.join('\n');
+    if (key === ownKey) return;
+    ownKey = key;
+    u.subs.textContent = '';
+    for (const line of lines.map(clean).filter(Boolean)) {
+      const div = document.createElement('div');
+      const span = document.createElement('span');
+      span.className = 'fliwyee-subs-line';
+      span.lang = 'it';
+      span.textContent = line;
+      div.append(span);
+      u.subs.append(div);
+    }
+  }
+
+  // ---------- on-player UI: a layer with the pill, the message, the highlight ----------
+  // YouTube: inside its player. Elsewhere: a layer that sits exactly over the video.
 
   function ensureUi() {
     const player = $player();
-    if (!player) return null;
-    if (ui && ui.player === player && player.contains(ui.toast)) return ui;
-    if (ui) [ui.pill, ui.toast, ui.hl].forEach((el) => el.remove());
+    const fixed = !player;
+    const host = player || document.fullscreenElement || document.documentElement;
+    if (fixed && !$video()) return null;
+    if (ui && ui.host === host && host.contains(ui.layer)) {
+      if (fixed) syncLayer();
+      return ui;
+    }
+    if (ui) ui.layer.remove();
+    const layer = document.createElement('div');
+    layer.className = `fliwyee-layer${fixed ? ' fliwyee-layer-fixed' : ''}`;
     const make = (cls) => {
       const d = document.createElement('div');
       d.className = cls;
-      player.appendChild(d);
+      layer.appendChild(d);
       return d;
     };
-    ui = { player, pill: make('fliwyee-pill'), toast: make('fliwyee-toast'), hl: make('fliwyee-hl') };
-    // Clicks on the toast (Undo) must not reach the player, or it would pause/play the video.
+    ui = { host, layer, fixed, subs: make('fliwyee-subs'), pill: make('fliwyee-pill'), toast: make('fliwyee-toast'), hl: make('fliwyee-hl') };
+    host.appendChild(layer);
+    ownKey = '';
+    // Clicks on the message (Undo, Ask AI) must not reach the player, or it would pause/play.
     ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick'].forEach((type) =>
       ui.toast.addEventListener(type, (e) => e.stopPropagation())
     );
-    // Keep the message (and its Undo) while the mouse is on it.
+    // Keep the message (and its buttons) while the mouse is on it.
     ui.toast.addEventListener('mouseenter', () => clearTimeout(toastTimer));
     ui.toast.addEventListener('mouseleave', () => hideToastSoon(1200));
+    if (fixed) syncLayer();
     updatePill();
     return ui;
+  }
+
+  // Keep the layer exactly over the video (scrolling, resizing, full screen).
+  function syncLayer() {
+    if (!ui || !ui.fixed) return;
+    const v = $video();
+    const s = ui.layer.style;
+    if (!v) {
+      s.display = 'none';
+      return;
+    }
+    const r = v.getBoundingClientRect();
+    s.display = r.width && r.height ? '' : 'none';
+    s.left = `${r.left}px`;
+    s.top = `${r.top}px`;
+    s.width = `${r.width}px`;
+    s.height = `${r.height}px`;
+    s.setProperty('--fliwyee-subs-size', `${Math.round(Math.max(16, Math.min(42, r.height * 0.05)))}px`);
+  }
+
+  function tick() {
+    if (!enabled) return;
+    if (!$player() && ui && document.fullscreenElement && ui.host !== document.fullscreenElement) ensureUi();
+    syncLayer();
+    updateOwnSubtitles();
   }
 
   function hideToastSoon(ms) {
@@ -343,10 +517,10 @@
     const w = captionWindowOf(el) ? wordAtPoint(m.x, m.y) : null;
     const u = w && ensureUi();
     if (!u) return hideHighlight();
-    const pr = u.player.getBoundingClientRect();
+    const lr = u.layer.getBoundingClientRect();
     const s = u.hl.style;
-    s.left = `${w.rect.left - pr.left - 2}px`;
-    s.top = `${w.rect.top - pr.top}px`;
+    s.left = `${w.rect.left - lr.left - 2}px`;
+    s.top = `${w.rect.top - lr.top}px`;
     s.width = `${w.rect.width + 4}px`;
     s.height = `${w.rect.height}px`;
     u.hl.classList.add('show');
@@ -404,8 +578,9 @@
       type,
       text,
       context: ctx === text ? '' : ctx,
+      site: SITE.id,
       videoId: currentVideoId(),
-      title: videoTitle(),
+      title: SITE.title(),
       // 1 second before the line starts, so the link plays the whole line
       time: Math.max(0, Math.floor(startTimeFor(text, type) - 1)),
       auto: !!(track && track.auto),
@@ -436,7 +611,7 @@
   function captureSentence() {
     const text = screenLine();
     if (!text) {
-      showToast('No subtitle on screen. Turn on CC.');
+      showToast('No subtitle on screen. Turn on the subtitles (CC).');
       return;
     }
     capture('sentence', text, '');
@@ -449,7 +624,7 @@
     if (!it) {
       const line = screenLine();
       if (!line) {
-        showToast('Click a word first, or turn on CC.');
+        showToast('Click a word first, or turn on the subtitles (CC).');
         return;
       }
       it = { type: 'sentence', text: line, context: '' };
@@ -471,7 +646,9 @@
     const sel = window.getSelection();
     const selected = sel && !sel.isCollapsed ? clean(sel.toString()) : '';
     const win = captionWindowOf(e.target) || (sel && captionWindowOf(sel.anchorNode));
-    const sentence = captionText(win);
+    // the sentence: all subtitle lines on screen when they are separate boxes (most players),
+    // just this box on YouTube (one box holds the whole line there)
+    const sentence = SITE.id === 'youtube' ? captionText(win) : captionText(null) || captionText(win);
     if (selected) {
       const inside = captionWindowOf(sel.anchorNode) && captionWindowOf(sel.focusNode);
       sel.removeAllRanges();
@@ -541,7 +718,7 @@
     stopReplay();
     replay = { end, start, timer: 0, prevRate: slow ? prevRate : null };
     if (slow) v.playbackRate = 0.75;
-    v.currentTime = start;
+    seekTo(v, start);
     const p = v.play();
     if (p && p.catch) p.catch(() => {});
 
@@ -561,7 +738,8 @@
       const msLeft = ((replay.end - ct) / (v.playbackRate || 1)) * 1000;
       replay.timer = setTimeout(check, Math.max(5, Math.min(200, msLeft - 15)));
     };
-    replay.timer = setTimeout(check, 30);
+    // Netflix jumps a moment later (through its own player), so give it a little longer.
+    replay.timer = setTimeout(check, SITE.seek === 'netflix' ? 400 : 30);
 
     if (i < 0) showToast('↺ Last 3 seconds (subtitle timing not loaded yet)');
     else if (slow) showToast('↺ Slow replay 0.75×');
@@ -570,9 +748,9 @@
   // ---------- events ----------
 
   // Mouse presses on the subtitles are ours while capture is on:
-  // YouTube must not drag the subtitle box or pause the video.
+  // the player must not drag the subtitle box or pause the video.
   // After Fliwyee is updated or removed, this copy in an already-open tab is cut off from the
-  // extension. It then switches itself off so YouTube works normally until you reload.
+  // extension. It then switches itself off so the page works normally until you reload.
   const alive = () => {
     try {
       return !!(chrome.runtime && chrome.runtime.id);
@@ -580,14 +758,18 @@
       return false;
     }
   };
+  window.__fliwyeeContent = { alive };
+
   let retired = false;
   function retire() {
     if (retired) return;
     retired = true;
     enabled = false;
     stopReplay();
+    clearInterval(ticker);
+    restoreOwnTrack();
     for (const [type, fn] of LISTENERS) window.removeEventListener(type, fn, true);
-    if (ui) [ui.pill, ui.toast, ui.hl].forEach((node) => node.remove());
+    if (ui) ui.layer.remove();
     ui = null;
     if (document.documentElement) document.documentElement.classList.remove(ON_CLASS);
   }
@@ -668,6 +850,7 @@
     hideHighlight();
     if (enabled) ensureUi();
   });
+  document.addEventListener('fullscreenchange', () => enabled && ensureUi());
 
   // ---------- on/off state ----------
 
@@ -676,10 +859,15 @@
   function applyEnabled(on, announce) {
     enabled = on;
     if (document.documentElement) document.documentElement.classList.toggle(ON_CLASS, on);
-    if (on) ensureUi();
-    else {
+    clearInterval(ticker);
+    if (on) {
+      ensureUi();
+      if (!$player()) ticker = setInterval(tick, 250); // other websites: follow the video, own subtitles
+      tick();
+    } else {
       hideHighlight();
       stopReplay();
+      restoreOwnTrack();
     }
     if (!announce || !visible()) return;
     if (on) showToast('Fliwyee ON · click a word · drag a phrase · S line · R replay · Q ask AI', { ms: 3000 });
@@ -688,7 +876,7 @@
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local') return;
+    if (area !== 'local' || retired) return;
     if (changes.current) {
       const cur = changes.current.newValue;
       sessionCount = cur && cur.items ? cur.items.length : 0;
@@ -698,7 +886,7 @@
     if (changes.enabled) applyEnabled(!!changes.enabled.newValue, true);
     // The session was ended (Ctrl+Shift+E or the side panel).
     const saved = changes.lastSaved && changes.lastSaved.newValue;
-    if (saved && changes.current && !changes.current.newValue && visible() && $player()) {
+    if (saved && changes.current && !changes.current.newValue && visible() && $video()) {
       lastCapture = null;
       showToast(
         saved.filename
@@ -710,11 +898,16 @@
   });
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (!msg || msg.type !== 'seek') return false;
+    if (!msg || retired) return false;
+    if (msg.type === 'ping') {
+      sendResponse({ ok: true, site: SITE.id });
+      return false;
+    }
+    if (msg.type !== 'seek') return false;
     const v = $video();
     if (v && currentVideoId() === msg.videoId) {
       stopReplay();
-      v.currentTime = Math.max(0, Number(msg.time) || 0);
+      seekTo(v, Number(msg.time) || 0);
       const p = v.play();
       if (p && p.catch) p.catch(() => {});
       sendResponse({ ok: true });
@@ -725,6 +918,8 @@
   chrome.storage.local.get({ enabled: false, current: null, settings: null }).then((st) => {
     sessionCount = st.current && st.current.items ? st.current.items.length : 0;
     settings = st.settings;
-    applyEnabled(!!st.enabled, false);
+    // Added to this page by Ctrl+Shift+X (other websites): say so.
+    applyEnabled(!!st.enabled, !!window.__fliwyeeAnnounce);
+    window.__fliwyeeAnnounce = false;
   });
 })();
