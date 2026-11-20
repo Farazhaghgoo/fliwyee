@@ -145,11 +145,15 @@
 
         setInterval(() => {
           const d = window.fakeData;
-          const items = d.current ? d.current.items.map((i) => `  [${i.type}] ${i.text}  <- ${i.context}  @${i.time}s  (${i.site})`) : [];
+          const nbs = Object.keys(d).filter((k) => k.startsWith('nb:'));
+          const lines = nbs.flatMap((k) => [
+            `  ${k}`,
+            ...d[k].lines.map((l) => `    @${l.time}s  ${l.sentence}  ->  ${l.words.map((w) => w.text).join(', ')}  [${l.tags.join(',')}]`),
+          ]);
           document.getElementById('log').textContent = [
             `mode: ${mode}   enabled: ${!!d.enabled}   track mode: ${track.mode}`,
-            `current session (${items.length}):`,
-            ...items,
+            `notebooks (${nbs.length}):`,
+            ...lines,
             `events: ${JSON.stringify(events.slice(-4))}`,
           ].join('\n');
         }, 300);

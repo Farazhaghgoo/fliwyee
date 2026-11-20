@@ -20,17 +20,18 @@
       </button>
     </header>
 
-    <!-- Only shown when you press N on the video or click ✎ on an item. -->
+    <!-- Only shown when you press N on the video or click ✎ on a line. -->
     <section id="editor" class="editor" hidden aria-labelledby="editor-title">
       <h2 id="editor-title">Edit</h2>
-      <div id="ed-text-row">
-        <label for="ed-text">Word or phrase</label>
-        <input id="ed-text" type="text" spellcheck="false" autocomplete="off" />
-      </div>
       <label for="ed-sentence">Sentence</label>
       <textarea id="ed-sentence" rows="2" spellcheck="false"></textarea>
-      <label for="ed-note">Your note</label>
-      <textarea id="ed-note" rows="3" placeholder="The meaning, or what the AI said"></textarea>
+      <div class="ed-label">Tags</div>
+      <div id="ed-tags" class="tag-picker" role="group" aria-label="Tags"></div>
+      <div class="ed-label">Words and phrases <span class="muted">with your note on each</span></div>
+      <div id="ed-words" class="ed-words"></div>
+      <button type="button" id="ed-add-word" class="link">+ Add a word</button>
+      <label for="ed-note">Your note on the sentence</label>
+      <textarea id="ed-note" rows="3" placeholder="The meaning, the grammar, or what the AI said"></textarea>
       <p class="hint">Enter saves · Shift+Enter new line · Esc cancels</p>
       <div class="actions">
         <button type="button" id="ed-save" class="primary">Save</button>
@@ -39,51 +40,65 @@
     </section>
 
     <p class="shortcut">
-      Pause / resume <kbd id="sc-toggle">…</kbd> · End session <kbd id="sc-end">…</kbd>
+      Pause / resume <kbd id="sc-toggle">…</kbd> · Save files <kbd id="sc-save">…</kbd>
       <a href="#" id="change-shortcut">change</a>
     </p>
 
     <details class="help" id="help">
       <summary>How to use</summary>
       <ul>
-        <li><b>Click</b> a word in the subtitles</li>
+        <li><b>Click</b> a word in the subtitles: its sentence is copied with the word in <b>bold</b>, and saved</li>
         <li><b>Drag</b> across words for a phrase</li>
         <li><kbd>S</kbd> the whole subtitle line</li>
-        <li><kbd>R</kbd> replay the line · <kbd>Shift</kbd>+<kbd>R</kbd> slower</li>
+        <li>
+          <kbd>1</kbd> Word · <kbd>2</kbd> Sentence / idiom · <kbd>3</kbd> Grammar structure · <kbd>4</kbd> Listening: tag
+          the last capture
+        </li>
+        <li><kbd>R</kbd> replay the sentence · <kbd>Shift</kbd>+<kbd>R</kbd> slower</li>
         <li><kbd>Q</kbd> ask your AI chat about the last capture</li>
-        <li><kbd>N</kbd> add a note to the last capture, or fix it</li>
+        <li><kbd>N</kbd> open these notes and edit the last capture</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo the last capture</li>
       </ul>
       <p>
-        Pausing keeps the session going. Ending it (<kbd id="sc-end-2">Ctrl+Shift+E</kbd> or <b>End session</b>) saves it
-        to <code>Downloads/italian-subtitles</code>.
+        Every video has its own notebook. Each click is saved in Fliwyee right away. The notebook file goes to
+        <code>Downloads/italian-subtitles</code> when you press <kbd id="sc-save-2">Ctrl+Shift+E</kbd>, leave the video
+        or close this panel.
       </p>
       <p>
-        Fliwyee runs by itself on YouTube (also players embedded in other pages) and Netflix. On any other
-        video website, press <kbd id="sc-toggle-2">Ctrl+Shift+X</kbd> on that page to add it there.
+        Fliwyee runs by itself on YouTube (also players embedded in other pages) and Netflix. On any other video website,
+        press <kbd id="sc-toggle-2">Ctrl+Shift+X</kbd> on that page to add it there.
       </p>
     </details>
 
-    <section class="session" aria-labelledby="current-title">
-      <div class="section-head">
-        <h2 id="current-title">This session <span id="count" class="count">0</span></h2>
-        <span id="started" class="muted"></span>
-      </div>
+    <section id="notebook" class="notebook" aria-labelledby="nb-title">
+      <p id="nb-kicker" class="kicker">This video</p>
+      <h2 id="nb-title" class="nb-title"></h2>
+      <p id="nb-meta" class="muted"></p>
+      <p id="nb-file" class="muted"></p>
       <div class="actions">
         <button type="button" id="ask-all" class="primary">Ask AI about all</button>
         <button type="button" id="copy-all">Copy all</button>
-        <button type="button" id="open-file" title="Save the latest version of the file and open it">Open file</button>
+        <button type="button" id="save-file" title="Write the notebook file now">Save file</button>
+        <button type="button" id="open-file" title="Save the file and open it">Open file</button>
         <button type="button" id="show-file" title="Open the folder with the file">Show in folder</button>
-        <button type="button" id="end-session">End session</button>
       </div>
-      <ol id="items" class="items"></ol>
-      <p id="empty" class="empty"></p>
+      <div class="filterbar">
+        <div id="filters" class="filters" role="group" aria-label="Show only"></div>
+        <input id="search" type="search" placeholder="Search these notes" aria-label="Search these notes" />
+      </div>
+      <ol id="lines" class="lines"></ol>
+      <p id="nb-empty" class="empty"></p>
+      <button type="button" id="nb-delete" class="link danger">Delete this notebook</button>
     </section>
 
-    <section class="past" aria-labelledby="past-title">
-      <h2 id="past-title">Past sessions</h2>
-      <div id="past-list"></div>
-      <p id="past-empty" class="empty">Ended sessions show up here.</p>
+    <section class="all" aria-labelledby="all-title">
+      <div class="section-head">
+        <h2 id="all-title">All notebooks <span id="nb-count" class="count">0</span></h2>
+        <button type="button" id="load" class="small">Load notebook file…</button>
+      </div>
+      <input id="load-file" type="file" accept=".html,.htm,text/html" multiple hidden />
+      <ol id="nb-list" class="nb-list"></ol>
+      <p class="hint">Load a Fliwyee notebook file (or drop it on this panel) to keep working on it.</p>
     </section>
 
     <details class="settings" id="settings">
@@ -99,8 +114,8 @@
       <textarea id="p-sentence" rows="4" spellcheck="false"></textarea>
       <p class="hint"><code>{sentence}</code> the sentence</p>
 
-      <label for="p-session">Prompt for the whole session</label>
-      <textarea id="p-session" rows="6" spellcheck="false"></textarea>
+      <label for="p-notebook">Prompt for a whole notebook (or the lines you filtered)</label>
+      <textarea id="p-notebook" rows="6" spellcheck="false"></textarea>
       <p class="hint"><code>{items}</code> your sentences, each with the words you took from it</p>
 
       <div class="actions">
@@ -109,6 +124,7 @@
       </div>
     </details>
 
+    <div id="drop" class="drop" hidden>Drop the notebook file to load it</div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
 
     <script src="../lib/format.js"></script>

@@ -1,19 +1,23 @@
-// Fliwyee background worker: on/off, sessions, the icon counter, the session file and Ask AI.
+// Fliwyee background worker: on/off, notebooks (one per video), tags, undo, the icon counter,
+// the notebook files and Ask AI.
 // Storage (chrome.storage.local):
-//   enabled   boolean                capture on/off (off only pauses: the session keeps going)
-//   current   Session | null         the open session (starts with the first capture)
-//   sessions  Session[]              ended sessions, newest first
-//   lastSaved { count, folder, filename, error, at }   the last ended session
-//   settings  { ai, prompts: { word, sentence, session } }
-// Session = { id, startedAt, updatedAt, endedAt?, filename?, downloadId?, items: Item[] }
-// Item    = { id, at, type: 'word'|'phrase'|'sentence', text, context, videoId, title, time, auto }
+//   enabled      boolean                capture on/off
+//   nb:<id>      Notebook               one per video (see lib/format.js), id = "<site>:<videoId>"
+//   undoStack    Undo[]                 the last changes Ctrl+Z / Undo can take back
+//   today        { day, count }         captures today (the number on the icon)
+//   lastSaved    { files, at, auto, upToDate, error }   the last time files were written
+//   settings     { ai, prompts: { word, sentence, notebook } }
+//   backupV04    { current, sessions }  Fliwyee 0.4 sessions, kept as they were after moving them
+// Every change is saved right away. The notebook files (Downloads/italian-subtitles/*.html) are
+// written when you press Ctrl+Shift+E or Save, when you leave a video, when you close the side
+// panel, and when Chrome starts (for anything that wasn't written yet).
 
 importScripts('lib/format.js');
 
 const F = self.FliwyeeFormat;
-const DEFAULTS = { enabled: false, current: null, sessions: [], settings: null };
-const TYPES = new Set(['word', 'phrase', 'sentence']);
+const KINDS = new Set(['word', 'phrase', 'sentence']);
 const SITES = new Set(['youtube', 'netflix', 'web']);
+const UNDO_MAX = 40;
 
 // Every state change goes through this queue so two quick actions can't overwrite each other.
 let queue = Promise.resolve();
@@ -23,194 +27,337 @@ function serial(fn) {
   return run;
 }
 
-const getState = () => chrome.storage.local.get(DEFAULTS);
 const str = (v, max) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
 
-function cleanItem(raw) {
+async function getNotebook(id) {
+  const key = F.storageKey(id);
+  const got = await chrome.storage.local.get(key);
+  return got[key] ? F.normalizeNotebook(got[key]) : null;
+}
+
+const putNotebook = (nb) => chrome.storage.local.set({ [F.storageKey(nb.id)]: nb });
+
+async function allNotebooks() {
+  const all = await chrome.storage.local.get(null);
+  return Object.keys(all)
+    .filter((k) => k.startsWith(F.NB_PREFIX))
+    .map((k) => F.normalizeNotebook(all[k]))
+    .filter(Boolean);
+}
+
+function changed(nb) {
+  nb.updated = Date.now();
+  nb.dirty = true;
+  const day = F.dayKey(nb.updated);
+  if (!nb.days.includes(day)) nb.days.push(day);
+}
+
+// ---------- the icon counter: captures today ----------
+
+async function bumpToday(delta, at) {
+  const day = F.dayKey(Date.now());
+  if (at && F.dayKey(at) !== day) return; // undoing something from another day
+  const { today } = await chrome.storage.local.get({ today: null });
+  const count = today && today.day === day ? today.count : 0;
+  await chrome.storage.local.set({ today: { day, count: Math.max(0, count + delta) } });
+}
+
+async function pushUndo(entry) {
+  const { undoStack } = await chrome.storage.local.get({ undoStack: [] });
+  undoStack.push(entry);
+  await chrome.storage.local.set({ undoStack: undoStack.slice(-UNDO_MAX) });
+}
+
+// ---------- captures ----------
+
+function cleanCapture(raw) {
   const r = raw || {};
   const time = Number(r.time);
   return {
-    type: TYPES.has(r.type) ? r.type : 'word',
+    kind: KINDS.has(r.kind) ? r.kind : 'word',
     text: str(r.text, 500),
-    context: str(r.context, 1000),
+    sentence: str(r.sentence, 1000),
     site: SITES.has(r.site) ? r.site : 'youtube',
-    videoId: str(r.videoId, 1000), // other websites: the page address
-    title: str(r.title, 200),
+    videoId: str(r.videoId, 2000), // other websites: the page address
+    title: str(r.title, 300),
     time: Number.isFinite(time) && time > 0 ? Math.floor(time) : 0,
     auto: !!r.auto,
   };
 }
 
-function findSession(st, sessionId) {
-  if (st.current && (!sessionId || st.current.id === sessionId)) return { s: st.current, isCurrent: true };
-  const s = st.sessions.find((x) => x.id === sessionId);
-  return s ? { s, isCurrent: false } : { s: null, isCurrent: false };
-}
+// A click (word), a drag (phrase) or S (sentence). One line per sentence: a word from a
+// sentence you already saved is added to that line, and gets the Word tag.
+async function capture(raw, sender) {
+  const { enabled } = await chrome.storage.local.get({ enabled: false });
+  if (!enabled) return { status: 'off' };
+  const it = cleanCapture(raw);
+  if (!it.text) return { status: 'empty' };
 
-// ---------- captures ----------
-
-async function capture(raw) {
-  const st = await getState();
-  if (!st.enabled) return { status: 'off' };
-  const item = cleanItem(raw);
-  if (!item.text) return { status: 'empty' };
-
+  const id = F.notebookId(it.site, it.videoId);
   const now = Date.now();
-  const current = st.current || { id: `s${now}`, startedAt: now, updatedAt: now, items: [] };
-  const key = F.norm(item.text);
-  const dup = current.items.find((i) => F.norm(i.text) === key);
-  if (dup) return { status: 'duplicate', id: dup.id, count: current.items.length };
-  const saved = { id: `i${now}${Math.random().toString(36).slice(2, 7)}`, at: now, ...item };
-  current.items.push(saved);
-  current.updatedAt = now;
-  await chrome.storage.local.set({ current });
-  return { status: 'added', id: saved.id, count: current.items.length };
+  const nb = (await getNotebook(id)) || F.newNotebook({ site: it.site, videoId: it.videoId, title: it.title, created: now });
+  if (!nb.title && it.title) nb.title = it.title;
+  if (it.auto) nb.auto = true;
+
+  const isWord = it.kind !== 'sentence';
+  const sentence = isWord ? it.sentence : it.text;
+  let line = sentence
+    ? F.findLine(nb, sentence, it.time)
+    : nb.lines.find((l) => !l.sentence && l.words.some((w) => F.norm(w.text) === F.norm(it.text)));
+  const undo = { id: F.uid('u'), notebookId: id, at: now, text: it.text };
+
+  if (!line) {
+    line = { id: F.uid('l'), at: now, time: it.time, sentence, words: [], tags: [], note: '' };
+    if (isWord) {
+      line.words.push({ text: it.text, note: '' });
+      line.tags.push('word');
+    } else line.tags.push('sentence');
+    nb.lines.push(line);
+    Object.assign(undo, { op: 'newLine', lineId: line.id });
+  } else {
+    // auto subtitles: the text on screen may now hold more of the sentence
+    const longer = F.norm(sentence);
+    if (longer.length > F.norm(line.sentence).length && longer.includes(F.norm(line.sentence))) line.sentence = sentence;
+    let word = null;
+    const tags = [];
+    if (isWord) {
+      if (!line.words.some((w) => F.norm(w.text) === F.norm(it.text))) {
+        line.words.push({ text: it.text, note: '' });
+        word = it.text;
+      }
+      if (!line.tags.includes('word')) tags.push('word');
+    } else if (!line.tags.includes('sentence')) tags.push('sentence');
+    if (!word && !tags.length) {
+      return { status: 'duplicate', notebookId: id, lineId: line.id, count: nb.lines.length, tags: line.tags };
+    }
+    line.tags = F.TAG_IDS.filter((t) => line.tags.includes(t) || tags.includes(t));
+    line.time = Math.min(line.time, it.time);
+    Object.assign(undo, { op: 'change', lineId: line.id, word, tags });
+  }
+
+  changed(nb);
+  nb.lastLineId = line.id;
+  nb.lastCaptureAt = now;
+  await putNotebook(nb);
+  await pushUndo(undo);
+  await bumpToday(1);
+  if (sender && sender.tab && sender.tab.id != null) rememberTab(sender.tab.id, id);
+  return {
+    status: 'added',
+    joined: undo.op === 'change',
+    notebookId: id,
+    lineId: line.id,
+    undoId: undo.id,
+    count: nb.lines.length,
+    tags: line.tags,
+  };
 }
 
-// Undo: remove one item by id, or the newest item of the open session.
-async function undo(id) {
-  const st = await getState();
-  const cur = st.current;
-  if (!cur || !cur.items.length) return { status: 'none' };
-  const idx = id ? cur.items.findIndex((i) => i.id === id) : cur.items.length - 1;
+// Undo: one change by its id, or the newest one.
+async function undo(undoId) {
+  const { undoStack } = await chrome.storage.local.get({ undoStack: [] });
+  const idx = undoId ? undoStack.findIndex((u) => u.id === undoId) : undoStack.length - 1;
   if (idx < 0) return { status: 'none' };
-  const [gone] = cur.items.splice(idx, 1);
-  await chrome.storage.local.set({ current: cur });
-  return { status: 'removed', id: gone.id, text: gone.text, count: cur.items.length };
-}
+  const [u] = undoStack.splice(idx, 1);
+  await chrome.storage.local.set({ undoStack });
+  const nb = await getNotebook(u.notebookId);
+  if (!nb) return { status: 'none' };
 
-async function removeItem(sessionId, id) {
-  const st = await getState();
-  if (st.current && st.current.id === sessionId) return undo(id);
-  const s = st.sessions.find((x) => x.id === sessionId);
-  if (!s) return { status: 'none' };
-  s.items = s.items.filter((i) => i.id !== id);
-  await chrome.storage.local.set({ sessions: st.sessions });
-  return { status: 'removed' };
-}
-
-// ---------- editing (only when you open the editor) ----------
-
-function findItem(st, itemId) {
-  for (const s of [st.current, ...st.sessions]) {
-    const it = s && s.items.find((i) => i.id === itemId);
-    if (it) return { s, it, isCurrent: s === st.current };
-  }
-  return null;
-}
-
-async function getItem(itemId) {
-  const st = await getState();
-  const found = findItem(st, itemId);
-  return found ? { status: 'ok', sessionId: found.s.id, item: found.it } : { status: 'none' };
-}
-
-// Change an item's text, its sentence and your note. A corrected sentence is applied to every
-// item from that same sentence in the session, so they stay on one line in the file.
-async function editItem(m) {
-  const st = await getState();
-  const found = findItem(st, m.id);
-  if (!found) return { status: 'none' };
-  const { s, it, isCurrent } = found;
-  const oldSentence = it.type === 'sentence' ? it.text : it.context;
-  const text = str(m.text, 500) || it.text;
-  const sentence = str(m.sentence, 1000);
-  it.note = String(m.note == null ? it.note || '' : m.note).trim().slice(0, 2000);
-  it.text = text;
-  if (it.type !== 'sentence') it.context = sentence === text ? '' : sentence;
-  const newSentence = it.type === 'sentence' ? it.text : it.context;
-  if (oldSentence && newSentence && F.norm(oldSentence) !== F.norm(newSentence)) {
-    for (const other of s.items) {
-      if (other === it) continue;
-      if (other.type === 'sentence' && F.norm(other.text) === F.norm(oldSentence)) other.text = newSentence;
-      else if (other.type !== 'sentence' && F.norm(other.context) === F.norm(oldSentence)) other.context = newSentence;
+  if (u.op === 'newLine') nb.lines = nb.lines.filter((l) => l.id !== u.lineId);
+  else if (u.op === 'change') {
+    const line = nb.lines.find((l) => l.id === u.lineId);
+    if (line) {
+      if (u.word) line.words = line.words.filter((w) => F.norm(w.text) !== F.norm(u.word));
+      line.tags = line.tags.filter((t) => !u.tags.includes(t));
     }
+  } else if (u.op === 'removeLine') {
+    if (!nb.lines.some((l) => l.id === u.line.id)) nb.lines.splice(Math.min(u.index, nb.lines.length), 0, F.normalizeLine(u.line));
   }
-  s.updatedAt = Date.now();
-  await chrome.storage.local.set(isCurrent ? { current: s } : { sessions: st.sessions });
-  return { status: 'saved', item: it };
+
+  // A notebook that this capture started, and that was never written to a file, goes away.
+  if (!nb.lines.length && !nb.savedAt) await chrome.storage.local.remove(F.storageKey(nb.id));
+  else {
+    changed(nb);
+    await putNotebook(nb);
+  }
+  if (u.op !== 'removeLine') await bumpToday(-1, u.at);
+  return { status: u.op === 'removeLine' ? 'restored' : 'removed', undoId: u.id, text: u.text, notebookId: u.notebookId, lineId: u.lineId };
 }
 
-// Side panels that are open right now, by window (each open panel keeps a port to us).
-const openPanels = new Map(); // windowId -> port
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== 'sidepanel') return;
-  let windowId = null;
-  port.onMessage.addListener((msg) => {
-    if (msg && msg.type === 'hello') {
-      windowId = msg.windowId;
-      openPanels.set(windowId, port);
-    }
-  });
-  port.onDisconnect.addListener(() => {
-    if (windowId != null && openPanels.get(windowId) === port) openPanels.delete(windowId);
-  });
-});
+// ---------- tags and editing (only when you ask for it) ----------
 
-// N on YouTube: show the editor for that item in the side panel (opening it if needed), or in a
-// small window when Chrome doesn't let us open the side panel from here.
-// Called straight from onMessage (no waiting first): opening the side panel needs your key press.
-function openEditor(itemId, sender) {
-  const windowId = sender && sender.tab ? sender.tab.windowId : null;
-  const request = { id: itemId, at: Date.now(), closeAfter: !openPanels.has(windowId) };
-  const panel = openPanels.get(windowId);
-  if (panel) {
-    panel.postMessage({ type: 'edit', request });
-    return Promise.resolve({ status: 'panel' });
+async function toggleTag(m) {
+  const nb = await getNotebook(m.notebookId);
+  const line = nb && nb.lines.find((l) => l.id === m.lineId);
+  if (!line || !F.TAG_IDS.includes(m.tag)) return { status: 'none' };
+  const on = m.on == null ? !line.tags.includes(m.tag) : !!m.on;
+  line.tags = F.TAG_IDS.filter((t) => (t === m.tag ? on : line.tags.includes(t)));
+  changed(nb);
+  await putNotebook(nb);
+  return { status: 'ok', on, tags: line.tags };
+}
+
+// Change a line: its sentence, its words (and their notes), its tags and your note.
+async function editLine(m) {
+  const nb = await getNotebook(m.notebookId);
+  const line = nb && nb.lines.find((l) => l.id === m.lineId);
+  if (!line) return { status: 'none' };
+  const fixed = F.normalizeLine({ ...line, sentence: m.sentence, words: m.words, tags: m.tags, note: m.note });
+  if (!fixed.sentence && !fixed.words.length) return { status: 'empty' };
+  Object.assign(line, { sentence: fixed.sentence, words: fixed.words, tags: fixed.tags, note: fixed.note });
+  changed(nb);
+  await putNotebook(nb);
+  return { status: 'saved', line };
+}
+
+async function removeLine(m) {
+  const nb = await getNotebook(m.notebookId);
+  const index = nb ? nb.lines.findIndex((l) => l.id === m.lineId) : -1;
+  if (index < 0) return { status: 'none' };
+  const [line] = nb.lines.splice(index, 1);
+  changed(nb);
+  await putNotebook(nb);
+  const entry = { id: F.uid('u'), op: 'removeLine', notebookId: nb.id, lineId: line.id, line, index, at: Date.now(), text: line.sentence || line.words.map((w) => w.text).join(', ') };
+  await pushUndo(entry);
+  return { status: 'removed', undoId: entry.id };
+}
+
+async function deleteNotebook(id) {
+  await chrome.storage.local.remove(F.storageKey(id));
+  return { status: 'deleted' };
+}
+
+// Load a notebook file (from the side panel): joined with what Fliwyee already has for that
+// video, so nothing is lost on either side.
+async function importNotebooks(m) {
+  const results = [];
+  for (const raw of Array.isArray(m.notebooks) ? m.notebooks : []) {
+    const incoming = F.normalizeNotebook(raw);
+    if (!incoming || !incoming.lines.length) continue;
+    const have = await getNotebook(incoming.id);
+    let nb;
+    let added = incoming.lines.length;
+    let merged = 0;
+    if (have) {
+      nb = have;
+      ({ added, merged } = F.mergeNotebook(nb, incoming));
+    } else {
+      nb = incoming;
+      // keep saving under the name of the file you loaded (in Downloads/italian-subtitles),
+      // unless another notebook already writes to that name
+      const taken = new Set((await allNotebooks()).map((x) => (x.filename || '').toLowerCase()));
+      const fromFile = m.filename ? `${F.FOLDER}/${String(m.filename)}` : '';
+      const name = [fromFile, nb.filename].find((f) => f && F.validFilename(f) && !taken.has(f.toLowerCase()));
+      nb.filename = name || null;
+      nb.downloadId = undefined;
+      nb.savedAt = undefined;
+    }
+    if (added || merged || !have) {
+      nb.updated = Date.now();
+      nb.dirty = true;
+      await putNotebook(nb);
+    }
+    results.push({ id: nb.id, title: F.nbTitle(nb), added, merged, count: nb.lines.length });
   }
-  let opening;
+  return results.length ? { status: 'ok', results } : { status: 'empty' };
+}
+
+// ---------- the notebook files ----------
+
+// data: URL of the file (base64 keeps big notebooks small enough for Chrome)
+function dataUrl(mime, text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return `data:${mime};charset=utf-8;base64,${btoa(bin)}`;
+}
+
+// A file name no other notebook uses (two videos with the same name on the same day).
+async function uniqueFilename(nb) {
+  const taken = new Set((await allNotebooks()).filter((x) => x.id !== nb.id && x.filename).map((x) => x.filename.toLowerCase()));
+  const base = F.notebookFilename(nb).replace(/\.html$/, '');
+  let name = `${base}.html`;
+  for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${base} (${n}).html`;
+  return name;
+}
+
+// Writes (or rewrites) a notebook's file in Downloads/italian-subtitles/.
+async function writeNotebook(nb) {
+  if (!nb.filename) nb.filename = await uniqueFilename(nb);
+  nb.downloadId = await chrome.downloads.download({
+    url: dataUrl('text/html', F.notebookHtml(nb)),
+    filename: nb.filename,
+    saveAs: false,
+    conflictAction: 'overwrite',
+  });
+  nb.savedAt = Date.now();
+  nb.dirty = false;
+  await putNotebook(nb);
+  return nb.filename;
+}
+
+// Saving by itself (leaving a video, closing the panel, Chrome starting): Chrome's download
+// message is hidden for that moment, when Chrome allows it.
+async function quietly(fn) {
+  let hidden = false;
   try {
-    opening = windowId != null && chrome.sidePanel && chrome.sidePanel.open ? chrome.sidePanel.open({ windowId }) : Promise.reject();
-  } catch (e) {
-    opening = Promise.reject(e);
+    if (chrome.downloads.setUiOptions) {
+      await chrome.downloads.setUiOptions({ enabled: false });
+      hidden = true;
+    }
+  } catch (_) {
+    hidden = false;
   }
-  return chrome.storage.local
-    .set({ editRequest: request })
-    .then(() => opening)
-    .then(() => ({ status: 'panel' }))
-    .catch(async () => {
-      await chrome.storage.local.set({ editRequest: null });
-      const url = chrome.runtime.getURL(`sidepanel/sidepanel.html?editor=${encodeURIComponent(itemId)}`);
-      await chrome.windows.create({ url, type: 'popup', width: 440, height: 470, focused: true });
-      return { status: 'window' };
-    });
+  try {
+    return await fn();
+  } finally {
+    if (hidden) setTimeout(() => chrome.downloads.setUiOptions({ enabled: true }).catch(() => {}), 2500);
+  }
 }
 
-// ---------- the session files ----------
-
-async function download(filename, mime, content) {
-  const url = `data:${mime};charset=utf-8,` + encodeURIComponent(content);
-  return chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
+// Write every notebook that has changes not yet in its file.
+async function saveChanged({ auto, ids } = {}) {
+  const list = (await allNotebooks()).filter((nb) => nb.dirty && nb.lines.length && (!ids || ids.includes(nb.id)));
+  if (!list.length) {
+    if (!auto) await chrome.storage.local.set({ lastSaved: { files: [], at: Date.now(), upToDate: true } });
+    return { status: 'upToDate', files: [] };
+  }
+  const files = [];
+  let error = null;
+  const run = async () => {
+    for (const nb of list) {
+      try {
+        files.push(await writeNotebook(nb));
+      } catch (e) {
+        error = String((e && e.message) || e);
+      }
+    }
+  };
+  if (auto) await quietly(run);
+  else await run();
+  await chrome.storage.local.set({ lastSaved: { files, at: Date.now(), auto: !!auto, error } });
+  return { status: error && !files.length ? 'error' : 'saved', files, error };
 }
 
-// Writes (or rewrites) both files of a session in Downloads/italian-subtitles/:
-//   fliwyee_<start>.html  a small web page: every minute is a working link to that moment
-//   fliwyee_<start>.txt   the same as plain text
-async function writeFile(session) {
-  const filename = F.sessionFilename(session, 'html');
-  session.downloadId = await download(filename, 'text/html', F.sessionHtml(session));
-  session.txtDownloadId = await download(F.sessionFilename(session, 'txt'), 'text/plain', F.sessionText(session));
-  session.filename = filename;
-  return filename;
+// Save button / Open file in the side panel: always write this notebook now.
+async function saveNotebook(id) {
+  const nb = await getNotebook(id);
+  if (!nb || !nb.lines.length) return { status: 'empty' };
+  try {
+    await writeNotebook(nb);
+  } catch (e) {
+    return { status: 'error', message: String((e && e.message) || e) };
+  }
+  return { status: 'saved', filename: nb.filename, downloadId: nb.downloadId };
 }
 
-async function saveFile(sessionId) {
-  const st = await getState();
-  const { s, isCurrent } = findSession(st, sessionId);
-  if (!s || !s.items.length) return { status: 'empty' };
-  await writeFile(s);
-  await chrome.storage.local.set(isCurrent ? { current: s } : { sessions: st.sessions });
-  return { status: 'saved', filename: s.filename, downloadId: s.downloadId };
-}
-
-async function showFile(sessionId) {
-  const st = await getState();
-  const { s } = findSession(st, sessionId);
-  if (s && s.downloadId != null) {
+async function showFile(id) {
+  const nb = id ? await getNotebook(id) : null;
+  if (nb && nb.downloadId != null) {
     try {
-      const [d] = await chrome.downloads.search({ id: s.downloadId });
+      const [d] = await chrome.downloads.search({ id: nb.downloadId });
       if (d && d.exists !== false && d.state === 'complete') {
-        chrome.downloads.show(s.downloadId);
+        chrome.downloads.show(nb.downloadId);
         return { status: 'shown' };
       }
     } catch (_) {
@@ -221,34 +368,74 @@ async function showFile(sessionId) {
   return { status: 'folder' };
 }
 
-// Ends the open session: writes its file and moves it to the past sessions.
-async function endSession() {
-  const st = await getState();
-  const cur = st.current;
-  if (!cur) return { status: 'empty' };
-  if (!cur.items.length) {
-    await chrome.storage.local.set({ current: null });
-    return { status: 'empty' };
-  }
-  cur.endedAt = Date.now();
-  let error = null;
+// Tabs where you captured something, so closing the tab saves that notebook's file.
+async function rememberTab(tabId, id) {
   try {
-    await writeFile(cur);
-  } catch (e) {
-    error = String((e && e.message) || e);
+    const { tabNotebooks = {} } = await chrome.storage.session.get('tabNotebooks');
+    tabNotebooks[tabId] = Array.from(new Set([...(tabNotebooks[tabId] || []), id]));
+    await chrome.storage.session.set({ tabNotebooks });
+  } catch (_) {
+    /* only a convenience: the notebook itself is already saved */
   }
-  const lastSaved = { count: cur.items.length, folder: F.FOLDER, filename: cur.filename || null, error, at: cur.endedAt };
-  await chrome.storage.local.set({ current: null, sessions: [cur, ...st.sessions], lastSaved });
-  return { status: 'saved', saved: lastSaved };
 }
 
-async function deleteSession(sessionId) {
-  const st = await getState();
-  await chrome.storage.local.set({ sessions: st.sessions.filter((x) => x.id !== sessionId) });
-  return { status: 'deleted' };
+async function tabClosed(tabId) {
+  let ids = [];
+  try {
+    const { tabNotebooks = {} } = await chrome.storage.session.get('tabNotebooks');
+    ids = tabNotebooks[tabId] || [];
+    delete tabNotebooks[tabId];
+    await chrome.storage.session.set({ tabNotebooks });
+  } catch (_) {
+    ids = [];
+  }
+  if (ids.length) await saveChanged({ auto: true, ids });
 }
 
-// ---------- on / off (pausing never ends the session) ----------
+// ---------- Fliwyee 0.4 sessions -> notebooks ----------
+
+// Runs once after the update. The old sessions are kept as they were in "backupV04".
+async function migrate() {
+  const st = await chrome.storage.local.get({ current: null, sessions: null });
+  const sessions = [st.current, ...(st.sessions || [])].filter((s) => s && Array.isArray(s.items));
+  if (st.current === null && st.sessions === null) return;
+  const byId = new Map();
+  const items = sessions.flatMap((s) => s.items).sort((a, b) => (a.at || 0) - (b.at || 0));
+  for (const it of items) {
+    const site = SITES.has(it.site) ? it.site : 'youtube';
+    const id = F.notebookId(site, it.videoId || '');
+    let nb = byId.get(id) || (await getNotebook(id));
+    if (!nb) nb = F.newNotebook({ site, videoId: it.videoId || '', title: it.title || '', created: it.at || Date.now() });
+    byId.set(id, nb);
+    if (!nb.title && it.title) nb.title = it.title;
+    if (it.auto) nb.auto = true;
+    if (it.at) {
+      const day = F.dayKey(it.at);
+      if (!nb.days.includes(day)) nb.days.push(day);
+      nb.created = Math.min(nb.created, it.at);
+    }
+    const isWord = it.type !== 'sentence';
+    const sentence = isWord ? it.context || '' : it.text;
+    const words = isWord ? [{ text: it.text, note: it.note || '' }] : [];
+    F.mergeNotebook(nb, {
+      lines: [F.normalizeLine({ at: it.at, time: it.time, sentence, words, tags: [isWord ? 'word' : 'sentence'], note: isWord ? '' : it.note || '' })],
+      days: nb.days,
+      title: nb.title,
+      auto: nb.auto,
+      created: nb.created,
+    });
+  }
+  const write = { backupV04: { current: st.current, sessions: st.sessions, at: Date.now() } };
+  for (const nb of byId.values()) {
+    nb.days.sort();
+    nb.dirty = true;
+    write[F.storageKey(nb.id)] = nb;
+  }
+  await chrome.storage.local.set(write);
+  await chrome.storage.local.remove(['current', 'sessions', 'lastSaved']);
+}
+
+// ---------- on / off ----------
 
 async function setEnabled(on) {
   await chrome.storage.local.set({ enabled: !!on });
@@ -256,8 +443,8 @@ async function setEnabled(on) {
 }
 
 async function toggle() {
-  const st = await getState();
-  return setEnabled(!st.enabled);
+  const { enabled } = await chrome.storage.local.get({ enabled: false });
+  return setEnabled(!enabled);
 }
 
 // Is Fliwyee running in this tab?
@@ -296,12 +483,66 @@ async function toggleFromShortcut(tab) {
   const url = (tab && tab.url) || '';
   if (tab && tab.id != null && /^https?:\/\//.test(url) && !(await hasFliwyee(tab.id))) {
     if (await addToTab(tab.id)) {
-      const st = await getState();
-      if (!st.enabled) await setEnabled(true);
+      const { enabled } = await chrome.storage.local.get({ enabled: false });
+      if (!enabled) await setEnabled(true);
       return { status: 'added' };
     }
   }
   return toggle();
+}
+
+// ---------- the side panel ----------
+
+// Side panels that are open right now, by window (each open panel keeps a port to us).
+const openPanels = new Map(); // windowId -> port
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'sidepanel') return;
+  let windowId = null;
+  port.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'hello') {
+      windowId = msg.windowId;
+      openPanels.set(windowId, port);
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (windowId != null && openPanels.get(windowId) === port) openPanels.delete(windowId);
+    // closing the panel writes the files of notebooks you changed
+    serial(() => saveChanged({ auto: true }));
+  });
+});
+
+// N on the video: open your notes (this video's notebook) in the side panel, with the editor
+// for the last capture. If Chrome doesn't let Fliwyee open the side panel from here, they open
+// in a small window instead.
+// Called straight from onMessage (no waiting first): opening the side panel needs your key press.
+function openNotes(m, sender) {
+  const windowId = sender && sender.tab ? sender.tab.windowId : null;
+  const request = { notebookId: m.notebookId || null, lineId: m.lineId || null, word: m.word || null, at: Date.now() };
+  const panel = openPanels.get(windowId);
+  if (panel) {
+    panel.postMessage({ type: 'open', request });
+    return Promise.resolve({ status: 'panel' });
+  }
+  let opening;
+  try {
+    opening = windowId != null && chrome.sidePanel && chrome.sidePanel.open ? chrome.sidePanel.open({ windowId }) : Promise.reject();
+  } catch (e) {
+    opening = Promise.reject(e);
+  }
+  return chrome.storage.local
+    .set({ panelRequest: request })
+    .then(() => opening)
+    .then(() => ({ status: 'panel' }))
+    .catch(async () => {
+      await chrome.storage.local.set({ panelRequest: null });
+      const q = new URLSearchParams({ nb: request.notebookId || '' });
+      if (request.lineId) q.set('editor', request.lineId);
+      if (request.word) q.set('word', request.word);
+      const url = chrome.runtime.getURL(`sidepanel/sidepanel.html?${q}`);
+      const size = request.lineId ? { width: 460, height: 620 } : { width: 460, height: 760 };
+      await chrome.windows.create({ url, type: 'popup', focused: true, ...size });
+      return { status: 'window' };
+    });
 }
 
 // ---------- Ask AI ----------
@@ -396,8 +637,8 @@ function waitForTabLoad(tabId, timeoutMs) {
 async function askAI(text) {
   const prompt = String(text || '').slice(0, 20000);
   if (!prompt.trim()) return { status: 'empty' };
-  const st = await getState();
-  const settings = F.mergedSettings(st.settings);
+  const { settings: saved } = await chrome.storage.local.get({ settings: null });
+  const settings = F.mergedSettings(saved);
 
   let tabs = [];
   try {
@@ -430,42 +671,41 @@ async function askAI(text) {
 // ---------- icon badge ----------
 
 async function refreshBadge() {
-  const st = await getState();
-  const n = st.current ? st.current.items.length : 0;
-  // green number while capturing, grey number while paused with a session open
-  const text = st.enabled ? (n ? String(n) : 'ON') : n ? String(n) : '';
+  const { enabled, today } = await chrome.storage.local.get({ enabled: false, today: null });
+  const n = today && today.day === F.dayKey(Date.now()) ? today.count : 0;
+  // green while capturing, grey while paused: the number is what you captured today
+  const text = enabled ? (n ? String(n) : 'ON') : n ? String(n) : '';
   await chrome.action.setBadgeText({ text });
-  await chrome.action.setBadgeBackgroundColor({ color: st.enabled ? '#008C45' : '#6B7075' });
+  await chrome.action.setBadgeBackgroundColor({ color: enabled ? '#008C45' : '#6B7075' });
   if (chrome.action.setBadgeTextColor) await chrome.action.setBadgeTextColor({ color: '#FFFFFF' });
   await chrome.action.setTitle({
-    title: st.enabled
-      ? `Fliwyee: capturing${n ? ` · ${F.plural(n)}` : ''}`
-      : n
-        ? `Fliwyee: paused · session open (${F.plural(n)})`
-        : 'Fliwyee: off',
+    title: `Fliwyee: ${enabled ? 'capturing' : 'paused'}${n ? ` · ${n} today` : ''}`,
   });
 }
 
 // ---------- wiring ----------
 
 const HANDLERS = {
-  capture: (m) => capture(m.item),
+  capture: (m, sender) => capture(m.item, sender),
   undo: (m) => undo(m.id),
-  remove: (m) => removeItem(m.sessionId, m.id),
+  toggleTag: (m) => toggleTag(m),
+  editLine: (m) => editLine(m),
+  removeLine: (m) => removeLine(m),
+  deleteNotebook: (m) => deleteNotebook(m.id),
+  importNotebooks: (m) => importNotebooks(m),
   toggle: () => toggle(),
   setEnabled: (m) => setEnabled(!!m.on),
-  endSession: () => endSession(),
-  saveFile: (m) => saveFile(m.sessionId),
-  showFile: (m) => showFile(m.sessionId),
-  deleteSession: (m) => deleteSession(m.sessionId),
-  editItem: (m) => editItem(m),
-  getItem: (m) => getItem(m.id),
+  saveChanged: () => saveChanged({}),
+  saveNotebook: (m) => saveNotebook(m.id),
+  showFile: (m) => showFile(m.id),
+  // you left a video (another video, reload, tab closed): write its file if it changed
+  leftVideo: (m) => saveChanged({ auto: true, ids: [m.notebookId] }),
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === 'openEditor') {
+  if (msg && msg.type === 'openNotes') {
     // not queued: the side panel must be opened while your key press still counts
-    openEditor(msg.id, sender).then(sendResponse, () => sendResponse({ status: 'error' }));
+    openNotes(msg, sender).then(sendResponse, () => sendResponse({ status: 'error' }));
     return true;
   }
   if (msg && msg.type === 'askAI') {
@@ -475,7 +715,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   const handler = msg && HANDLERS[msg.type];
   if (!handler) return false;
-  serial(() => handler(msg)).then(sendResponse, (err) =>
+  serial(() => handler(msg, sender)).then(sendResponse, (err) =>
     sendResponse({ status: 'error', message: String((err && err.message) || err) })
   );
   return true; // answer asynchronously
@@ -483,11 +723,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'toggle-capture') serial(() => toggleFromShortcut(tab));
-  else if (command === 'end-session') serial(endSession);
+  else if (command === 'end-session') serial(() => saveChanged({})); // Ctrl+Shift+E: save the files now
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => serial(() => tabClosed(tabId)));
+
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.enabled || changes.current)) refreshBadge();
+  if (area === 'local' && (changes.enabled || changes.today)) refreshBadge();
 });
 
 // Runs inside an open YouTube tab after Fliwyee is installed or updated. That tab still has the
@@ -521,8 +763,13 @@ function showUpdateNotice(reason) {
   document.documentElement.appendChild(bar);
 }
 
-// Capture is off when Chrome starts. An open session stays open until you end it.
-chrome.runtime.onStartup.addListener(() => serial(() => setEnabled(false)));
+// Chrome starts: capture is off, Chrome's download message is back on (in case Chrome was
+// closed while it was hidden), and notebooks changed last time get their files written.
+chrome.runtime.onStartup.addListener(() => {
+  if (chrome.downloads.setUiOptions) chrome.downloads.setUiOptions({ enabled: true }).catch(() => {});
+  serial(() => setEnabled(false));
+  serial(() => saveChanged({ auto: true }));
+});
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   refreshBadge();
@@ -544,4 +791,5 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 }
+serial(migrate); // first, before anything else in the queue
 refreshBadge();

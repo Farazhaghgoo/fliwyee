@@ -117,23 +117,29 @@
   // Pretend a ChatGPT tab is open; the fake message box below stands in for it.
   window.mockAiTabs = [{ id: 5, windowId: 1, url: 'https://chatgpt.com/c/demo', lastAccessed: 100 }];
   document.getElementById('reset').addEventListener('click', async () => {
-    await chrome.storage.local.set({ enabled: false, current: null, sessions: [] });
+    const keys = Object.keys(window.fakeData).filter((k) => k !== 'settings');
+    await chrome.storage.local.remove(keys);
     window.fakeLog.downloads.length = 0;
     window.fakeLog.clipboard.length = 0;
+    window.fakeLog.clipboardHtml.length = 0;
     events.length = 0;
   });
 
   const logEl = document.getElementById('log');
   setInterval(() => {
     const d = window.fakeData;
-    const items = d.current ? d.current.items.map((i) => `  [${i.type}] ${i.text}${i.context ? `  <- ${i.context}` : ''}  @${i.time}s`) : [];
+    const nbs = Object.keys(d).filter((k) => k.startsWith('nb:'));
+    const lines = nbs.flatMap((k) => [
+      `  ${k}  "${d[k].title}"  ${d[k].dirty ? 'unsaved' : 'saved'}  ${d[k].filename || ''}`,
+      ...d[k].lines.map((l) => `    @${l.time}s  ${l.sentence}  ->  ${l.words.map((w) => w.text).join(', ')}  [${l.tags.join(',')}]`),
+    ]);
     logEl.textContent = [
-      `enabled: ${!!d.enabled}   badge: "${window.fakeLog.badge}" ${window.fakeLog.badgeColor}   past sessions: ${(d.sessions || []).length}`,
-      `current session (${items.length}):`,
-      ...items,
-      `clipboard: ${JSON.stringify(window.fakeLog.clipboard.slice(-3))}`,
-      `downloads:`,
-      ...window.fakeLog.downloads.map((x) => `  ${x.filename}\n  ${x.text}`),
+      `enabled: ${!!d.enabled}   badge: "${window.fakeLog.badge}" ${window.fakeLog.badgeColor}   today: ${JSON.stringify(d.today || null)}`,
+      `notebooks (${nbs.length}):`,
+      ...lines,
+      `clipboard: ${JSON.stringify(window.fakeLog.clipboard.slice(-2))}`,
+      `clipboard html: ${JSON.stringify(window.fakeLog.clipboardHtml.slice(-1))}`,
+      `downloads: ${window.fakeLog.downloads.map((x) => `${x.filename}${x.uiHidden ? ' (quiet)' : ''}`).join(' | ')}`,
       `events:`,
       ...events.slice(-6).map((e) => `  ${e}`),
     ].join('\n');

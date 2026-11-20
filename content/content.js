@@ -1,12 +1,14 @@
 // Fliwyee on a video page (isolated world). The site details come from content/sites.js.
 // When capture is ON:
-//   click a word        -> copy + save the word (with its sentence)
-//   drag across words   -> copy + save the phrase (with its sentence)
-//   S                   -> copy + save the whole subtitle line
-//   R / Shift+R         -> replay the current line (Shift = 0.75x), then pause at its end
+//   click a word        -> copy its sentence with the word in bold, save the word (tag: Word)
+//   drag across words   -> the same for a phrase
+//   S                   -> copy + save the whole subtitle line (tag: Sentence / idiom)
+//   1 2 3 4             -> tag the last capture: Word, Sentence / idiom, Grammar structure, Listening
+//   R / Shift+R         -> replay the whole sentence (Shift = 0.75x), then pause at its end
 //   Q                   -> ask your AI chat about the last capture (or the line on screen)
-//   N                   -> edit the last capture / add a note (opens the editor in the side panel)
+//   N                   -> open your notes (side panel), with the editor for the last capture
 //   Ctrl+Z              -> undo the last capture
+// Each video has its own notebook; a word from a sentence you already saved joins that line.
 // When capture is OFF nothing changes on the page.
 (() => {
   'use strict';
@@ -21,9 +23,10 @@
   const APOSTROPHES = "'’";
 
   let enabled = false;
-  let sessionCount = 0;
+  let nbCount = 0; // lines in this video's notebook
   let settings = null; // prompts etc., from storage
-  let lastCapture = null; // { id, type, text, context } of the last capture in this tab
+  let lastCapture = null; // { notebookId, lineId, undoId, kind, text, sentence } of the last capture here
+  let lastSpan = null; // { videoId, start, end } of the last replay, so R again repeats it
   let ui = null; // { host, layer, pill, toast, hl, subs, fixed }
   let toastTimer = 0;
   let pressInCaption = false;
@@ -41,6 +44,7 @@
   const $player = () => SITE.player();
   const $video = () => SITE.video();
   const currentVideoId = () => SITE.videoId();
+  const currentNotebookId = () => (currentVideoId() ? F.notebookId(SITE.id, currentVideoId()) : null);
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
   const isWordChar = (ch) => !!ch && WORD_CHAR.test(ch);
   // Letters, plus an apostrophe between letters, so c'entra / un'ora / dov'è stay one word.
@@ -468,9 +472,9 @@
     const dot = document.createElement('span');
     dot.className = 'dot';
     const label = document.createElement('span');
-    label.textContent = sessionCount ? `Fliwyee · ${sessionCount}` : 'Fliwyee ON';
+    label.textContent = nbCount ? `Fliwyee · ${nbCount}` : 'Fliwyee ON';
     ui.pill.append(dot, label);
-    ui.pill.title = 'Capture is on. Ctrl+Shift+X pauses it, Ctrl+Shift+E ends the session.';
+    ui.pill.title = 'Capture is on. Ctrl+Shift+X pauses it. N opens your notes. Ctrl+Shift+E saves the files.';
   }
 
   // A small message on the player. Optional buttons: Ask AI (about `askItem`) and Undo.
@@ -545,23 +549,40 @@
     }
   }
 
-  async function copyText(text) {
+  // Copy plain text, plus a formatted version (bold) when given: apps that understand
+  // formatting (Word, Google Docs, email) paste the bold; others paste the plain text.
+  async function copyText(text, html) {
     try {
-      await navigator.clipboard.writeText(text);
+      if (html && window.ClipboardItem && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/plain': new Blob([text], { type: 'text/plain' }),
+            'text/html': new Blob([html], { type: 'text/html' }),
+          }),
+        ]);
+      } else await navigator.clipboard.writeText(text);
       return true;
     } catch (_) {
+      // no clipboard access from here (e.g. the page isn't focused): the older way
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.setAttribute('readonly', '');
       ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
       (document.body || document.documentElement).appendChild(ta);
       ta.select();
+      const onCopy = (e) => {
+        e.clipboardData.setData('text/plain', text);
+        if (html) e.clipboardData.setData('text/html', html);
+        e.preventDefault();
+      };
+      document.addEventListener('copy', onCopy, true);
       let ok = false;
       try {
         ok = document.execCommand('copy');
       } catch (_) {
         ok = false;
       }
+      document.removeEventListener('copy', onCopy, true);
       ta.remove();
       return ok;
     }
@@ -569,34 +590,51 @@
 
   // ---------- capture ----------
 
-  async function capture(type, text, context) {
+  // kind: 'word' (a click), 'phrase' (a drag) or 'sentence' (S).
+  // A word or phrase is copied inside its sentence, in bold; a sentence is copied as it is.
+  async function capture(kind, text, sentence) {
     text = clean(text);
     if (!text) return;
     const track = tracks.get(currentVideoId());
-    const ctx = type === 'sentence' ? '' : clean(context);
+    const ctx = kind === 'sentence' ? '' : clean(sentence);
     const item = {
-      type,
+      kind,
       text,
-      context: ctx === text ? '' : ctx,
+      sentence: ctx === text ? '' : ctx,
       site: SITE.id,
       videoId: currentVideoId(),
       title: SITE.title(),
       // 1 second before the line starts, so the link plays the whole line
-      time: Math.max(0, Math.floor(startTimeFor(text, type) - 1)),
+      time: Math.max(0, Math.floor(startTimeFor(text, kind) - 1)),
       auto: !!(track && track.auto),
     };
-    const copied = await copyText(text);
+    const out = kind === 'sentence' || !item.sentence ? { plain: text, html: '' } : F.boldCopy(item.sentence, text);
+    const copied = await copyText(out.plain, out.html);
     const res = await send({ type: 'capture', item });
     if (!res || res.status === 'gone') return;
     if (res.status === 'added' || res.status === 'duplicate') {
-      lastCapture = { id: res.id || null, type: item.type, text: item.text, context: item.context };
+      lastCapture = { notebookId: res.notebookId, lineId: res.lineId, undoId: res.undoId || null, kind, text, sentence: item.sentence };
     }
+    const what = kind === 'sentence' ? 'the line' : item.sentence ? `${text}  + its sentence` : text;
     if (res.status === 'added') {
-      showToast(`${copied ? 'Copied ✓' : 'Saved ✓'}  ${text}`, { undoId: res.id, askItem: lastCapture });
+      const joined = res.joined && kind !== 'sentence' ? '  · added to the saved sentence' : '';
+      showToast(`${copied ? 'Copied ✓' : 'Saved ✓'}  ${what}${joined}`, { undoId: res.undoId, askItem: lastCapture });
     } else if (res.status === 'duplicate') {
-      showToast(`${copied ? 'Copied ✓' : 'Already saved'}  ${text}  (already saved)`, { askItem: lastCapture });
+      showToast(`${copied ? 'Copied ✓' : 'Already saved'}  ${what}  (already saved)`, { askItem: lastCapture });
     } else if (res.status === 'off') showToast('Fliwyee is off');
-    else showToast(copied ? `Copied ✓  ${text}  (could not save)` : 'Could not copy or save');
+    else showToast(copied ? `Copied ✓  ${what}  (could not save)` : 'Could not copy or save');
+  }
+
+  // 1-4: switch a tag on or off for the last capture's line.
+  async function tagLast(tagId) {
+    if (!lastCapture || !lastCapture.lineId) {
+      showToast('Capture a word or a line first, then press 1-4 to tag it.');
+      return;
+    }
+    const res = await send({ type: 'toggleTag', notebookId: lastCapture.notebookId, lineId: lastCapture.lineId, tag: tagId });
+    if (!res || res.status === 'gone') return;
+    if (res.status !== 'ok') showToast('That line is gone');
+    else showToast(`${F.tagLabel(tagId)} ${res.on ? '✓' : 'removed'}  · ${res.tags.map(F.tagLabel).join(', ') || 'no tags'}`);
   }
 
   function screenLine() {
@@ -627,7 +665,7 @@
         showToast('Click a word first, or turn on the subtitles (CC).');
         return;
       }
-      it = { type: 'sentence', text: line, context: '' };
+      it = { kind: 'sentence', text: line, sentence: '' };
     }
     const prompt = F.itemPrompt(it, settings);
     const v = $video();
@@ -661,23 +699,28 @@
     if (w) capture('word', w.text, sentence);
   }
 
-  // N: edit the last capture (its text, sentence and your note) in the side panel.
-  // Nothing opens unless you press N.
-  async function openEditor() {
-    if (!lastCapture || !lastCapture.id) {
-      showToast('Capture a word first, then press N to add a note.');
-      return;
-    }
-    const res = await send({ type: 'openEditor', id: lastCapture.id });
+  // N: open your notes for this video in the side panel, with the editor for the last capture
+  // (to add a note, fix the text, or set tags). Nothing opens unless you press N.
+  async function openNotes() {
+    const nbId = currentNotebookId();
+    const last = lastCapture && lastCapture.notebookId === nbId ? lastCapture : null;
+    const res = await send({
+      type: 'openNotes',
+      notebookId: nbId,
+      lineId: last ? last.lineId : null,
+      word: last && last.kind !== 'sentence' ? last.text : null,
+    });
     if (!res || res.status === 'gone') return;
-    if (res.status === 'error') showToast('Could not open the editor. Use ✎ in the side panel.');
+    if (res.status === 'error') showToast('Could not open your notes. Click the Fliwyee icon instead.');
   }
 
   async function undo(id) {
     const res = await send({ type: 'undo', id });
     if (!res || res.status === 'gone') return;
-    if (res.status === 'removed' && lastCapture && lastCapture.id === res.id) lastCapture = null;
-    showToast(res.status === 'removed' ? `Removed  ${res.text}` : 'Nothing to undo');
+    if (res.status === 'removed' && lastCapture && lastCapture.undoId === res.undoId) lastCapture = null;
+    if (res.status === 'removed') showToast(`Removed  ${res.text}`);
+    else if (res.status === 'restored') showToast(`Brought back  ${res.text}`);
+    else showToast('Nothing to undo');
   }
 
   // ---------- replay ----------
@@ -690,24 +733,60 @@
     replay = null;
   }
 
+  // A subtitle line is often only part of a sentence (with auto-generated subtitles, 3 to 6
+  // words). R replays the whole sentence: back to where it starts and on to its full stop.
+  // Auto-generated subtitles have no full stops: there it's the lines on screen together.
+  const SENTENCE_END = /[.?!…]["'»”’)\]]*$/;
+  const TAIL = 0.35; // a little after the end, so the last word isn't cut off
+  const MAX_SPAN = 15; // seconds
+
+  function hasFullStops(track) {
+    if (track.fullStops == null) {
+      const n = track.cues.filter((c) => SENTENCE_END.test(c.text)).length;
+      track.fullStops = n >= Math.max(2, track.cues.length * 0.25);
+    }
+    return track.fullStops;
+  }
+
+  // The end of a line's speech: where the next line starts, if that's before the line ends.
+  const speechEnd = (cues, k) => (cues[k + 1] && cues[k + 1].start < cues[k].end ? cues[k + 1].start : cues[k].end);
+
+  function sentenceSpan(track, t) {
+    const cues = track.cues;
+    const i = cueIndexAt(cues, t);
+    if (i < 0) return null;
+    let a = i;
+    let b = i;
+    if (hasFullStops(track)) {
+      while (a > 0 && !SENTENCE_END.test(cues[a - 1].text) && cues[i].start - cues[a - 1].start < MAX_SPAN) a--;
+      while (b + 1 < cues.length && !SENTENCE_END.test(cues[b].text) && cues[b + 1].end - cues[a].start <= MAX_SPAN) b++;
+    } else {
+      // the lines still on screen (the older one is shown above the new one)
+      while (a > 0 && cues[a - 1].end > t && cues[i].start - cues[a - 1].start < MAX_SPAN) a--;
+    }
+    return { start: cues[a].start, end: Math.max(speechEnd(cues, b), cues[a].start + 0.3) + TAIL };
+  }
+
   function replayLine(slow) {
     const v = $video();
     if (!v) return;
-    const track = tracks.get(currentVideoId());
-    const cues = track ? track.cues : [];
+    const vid = currentVideoId();
+    const track = tracks.get(vid);
     const t = v.currentTime;
-    let i = cues.length ? cueIndexAt(cues, t) : -1;
+    let span = null;
+    // R again (during the replay, or right after it stopped): the same sentence again
+    if (lastSpan && lastSpan.videoId === vid && (replay || v.paused) && t >= lastSpan.start - 0.3 && t <= lastSpan.end + 0.6) {
+      span = lastSpan;
+    } else if (track && track.cues.length) {
+      span = sentenceSpan(track, t);
+      // Pressed right after a new sentence started? You most likely meant the one you just heard.
+      if (span && !replay && !v.paused && t - span.start < 0.3 && span.start > 0.1) span = sentenceSpan(track, span.start - 0.05) || span;
+    }
     let start;
     let end;
-    if (i >= 0) {
-      // Pressed right after a new line started? You most likely meant the line you just heard.
-      if (i > 0 && !replay && !v.paused && t - cues[i].start < 0.3) i -= 1;
-      const cue = cues[i];
-      const next = cues[i + 1];
-      start = cue.start;
-      end = next ? Math.min(cue.end, next.start) : cue.end;
-      if (end - start < 0.3) end = start + Math.max(0.3, cue.end - cue.start);
-      end -= 0.05; // stop just inside the line, so pressing R again repeats the same line
+    if (span) {
+      ({ start, end } = span);
+      lastSpan = { videoId: vid, start, end };
     } else {
       // No timing data (yet): replay the last 3 seconds.
       start = Math.max(0, t - 3);
@@ -741,7 +820,7 @@
     // Netflix jumps a moment later (through its own player), so give it a little longer.
     replay.timer = setTimeout(check, SITE.seek === 'netflix' ? 400 : 30);
 
-    if (i < 0) showToast('↺ Last 3 seconds (subtitle timing not loaded yet)');
+    if (!span) showToast('↺ Last 3 seconds (subtitle timing not loaded yet)');
     else if (slow) showToast('↺ Slow replay 0.75×');
   }
 
@@ -825,7 +904,11 @@
       askAI(null);
     } else if (noMods && !e.shiftKey && key === 'n') {
       block(e, true);
-      openEditor();
+      openNotes();
+    } else if (noMods && !e.shiftKey && F.TAGS.some((t) => t.key === e.key)) {
+      // 1-4 tag the last capture (YouTube's own 1-4 jumps are off only while capture is on)
+      block(e, true);
+      tagLast(F.TAGS.find((t) => t.key === e.key).id);
     } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && key === 'z') {
       block(e, true);
       undo();
@@ -844,10 +927,24 @@
   ];
   for (const [type, fn] of LISTENERS) window.addEventListener(type, fn, true);
 
+  // Leaving a video (another video, reload, closing the tab): its notebook file gets written.
+  let watching = currentNotebookId();
+  function leftVideo(id) {
+    if (id && !retired && alive()) send({ type: 'leftVideo', notebookId: id });
+  }
+  window.addEventListener('pagehide', () => leftVideo(watching));
+
   // YouTube changes video without reloading the page.
   window.addEventListener('yt-navigate-finish', () => {
     stopReplay();
     hideHighlight();
+    const now = currentNotebookId();
+    if (now !== watching) {
+      leftVideo(watching);
+      watching = now;
+      lastSpan = null;
+      refreshCount();
+    }
     if (enabled) ensureUi();
   });
   document.addEventListener('fullscreenchange', () => enabled && ensureUi());
@@ -870,53 +967,72 @@
       restoreOwnTrack();
     }
     if (!announce || !visible()) return;
-    if (on) showToast('Fliwyee ON · click a word · drag a phrase · S line · R replay · Q ask AI', { ms: 3000 });
-    else if (sessionCount) showToast(`Fliwyee paused · the session keeps going (${F.plural(sessionCount)})`);
-    else showToast('Fliwyee paused');
+    if (on) showToast('Fliwyee ON · click a word · drag a phrase · S line · 1-4 tag · R replay · N notes', { ms: 3000 });
+    else showToast('Fliwyee paused · your notes are saved');
+  }
+
+  // The number on the pill: lines in this video's notebook.
+  function refreshCount() {
+    const id = currentNotebookId();
+    if (!id) {
+      nbCount = 0;
+      updatePill();
+      return;
+    }
+    const key = F.storageKey(id);
+    chrome.storage.local
+      .get(key)
+      .then((got) => {
+        nbCount = got[key] && Array.isArray(got[key].lines) ? got[key].lines.length : 0;
+        updatePill();
+      })
+      .catch(() => {});
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || retired) return;
-    if (changes.current) {
-      const cur = changes.current.newValue;
-      sessionCount = cur && cur.items ? cur.items.length : 0;
+    const id = currentNotebookId();
+    const mine = id && changes[F.storageKey(id)];
+    if (mine) {
+      const nb = mine.newValue;
+      nbCount = nb && Array.isArray(nb.lines) ? nb.lines.length : 0;
       updatePill();
+      if (!nb) lastCapture = null; // notebook deleted
     }
     if (changes.settings) settings = changes.settings.newValue || null;
     if (changes.enabled) applyEnabled(!!changes.enabled.newValue, true);
-    // The session was ended (Ctrl+Shift+E or the side panel).
+    // Ctrl+Shift+E (or Save in the side panel): files written
     const saved = changes.lastSaved && changes.lastSaved.newValue;
-    if (saved && changes.current && !changes.current.newValue && visible() && $video()) {
-      lastCapture = null;
-      showToast(
-        saved.filename
-          ? `Session saved · ${F.plural(saved.count)} → Downloads/${saved.folder}`
-          : `Session ended · ${F.plural(saved.count)} (the file could not be written; use the side panel)`,
-        { ms: 3500 }
-      );
+    if (saved && !saved.auto && visible() && $video() && document.hasFocus()) {
+      const n = saved.files ? saved.files.length : 0;
+      if (saved.upToDate) showToast(`Everything is already saved in Downloads/${F.FOLDER}`, { ms: 3000 });
+      else if (n) showToast(`Saved ${n === 1 ? 'your notebook' : `${n} notebooks`} → Downloads/${F.FOLDER}`, { ms: 3500 });
+      else showToast('The file could not be written. Your notes are safe in Fliwyee: try Save in the side panel.', { ms: 4500 });
     }
   });
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || retired) return false;
     if (msg.type === 'ping') {
-      sendResponse({ ok: true, site: SITE.id });
+      sendResponse({ ok: true, site: SITE.id, videoId: currentVideoId(), notebookId: currentNotebookId(), title: SITE.title() });
       return false;
     }
     if (msg.type !== 'seek') return false;
     const v = $video();
     if (v && currentVideoId() === msg.videoId) {
-      stopReplay();
-      seekTo(v, Number(msg.time) || 0);
-      const p = v.play();
-      if (p && p.catch) p.catch(() => {});
+      if (msg.time != null) {
+        stopReplay();
+        seekTo(v, Number(msg.time) || 0);
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+      }
       sendResponse({ ok: true });
     } else sendResponse({ ok: false });
     return false;
   });
 
-  chrome.storage.local.get({ enabled: false, current: null, settings: null }).then((st) => {
-    sessionCount = st.current && st.current.items ? st.current.items.length : 0;
+  refreshCount();
+  chrome.storage.local.get({ enabled: false, settings: null }).then((st) => {
     settings = st.settings;
     // Added to this page by Ctrl+Shift+X (other websites): say so.
     applyEnabled(!!st.enabled, !!window.__fliwyeeAnnounce);

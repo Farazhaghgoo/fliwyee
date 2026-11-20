@@ -25,13 +25,19 @@
     opened: [],
     windowsCreated: [],
     sidePanelOpened: [],
+    uiHidden: false,
+    uiChanges: [],
+    clipboardHtml: [],
   };
 
   const onChanged = event();
   const onMessage = event();
   const onCommand = event();
   const onUpdated = event();
+  const onActivated = event();
+  const onRemoved = event();
   const onConnect = event();
+  const sessionData = {};
 
   // runtime.connect: a pair of ports, like the real thing
   function portPair(name) {
@@ -97,8 +103,26 @@
           }
           later(() => onChanged.listeners.slice().forEach((fn) => fn(clone(changes), 'local')));
         },
+        async remove(keys) {
+          const changes = {};
+          for (const k of [].concat(keys)) {
+            if (!(k in data)) continue;
+            changes[k] = { oldValue: clone(data[k]) };
+            delete data[k];
+          }
+          if (Object.keys(changes).length) later(() => onChanged.listeners.slice().forEach((fn) => fn(clone(changes), 'local')));
+        },
         async clear() {
           for (const k of Object.keys(data)) delete data[k];
+        },
+      },
+      // chrome.storage.session: kept while the browser runs
+      session: {
+        async get(key) {
+          return key in sessionData ? { [key]: clone(sessionData[key]) } : {};
+        },
+        async set(obj) {
+          for (const [k, v] of Object.entries(obj)) sessionData[k] = clone(v);
         },
       },
       onChanged,
@@ -125,6 +149,8 @@
     },
     tabs: {
       onUpdated,
+      onActivated,
+      onRemoved,
       // AI-site queries (an array of patterns) return window.mockAiTabs; anything else the YouTube tab.
       async query(q) {
         if (q && Array.isArray(q.url)) return clone(window.mockAiTabs || []);
@@ -175,9 +201,18 @@
     },
     downloads: {
       async download(opts) {
-        const text = decodeURIComponent(String(opts.url).replace(/^data:[^,]*,/, ''));
-        log.downloads.push({ filename: opts.filename, conflictAction: opts.conflictAction, text });
+        const url = String(opts.url);
+        const body = url.replace(/^data:[^,]*,/, '');
+        const text = /^data:[^,]*;base64,/.test(url)
+          ? new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0)))
+          : decodeURIComponent(body);
+        log.downloads.push({ filename: opts.filename, conflictAction: opts.conflictAction, text, uiHidden: log.uiHidden });
         return log.downloads.length;
+      },
+      // chrome.downloads.setUiOptions: Chrome's download message on/off
+      async setUiOptions({ enabled }) {
+        log.uiHidden = !enabled;
+        log.uiChanges.push(enabled);
       },
       async search({ id }) {
         return log.downloads[id - 1] ? [{ id, exists: true, state: 'complete' }] : [];
@@ -237,11 +272,23 @@
   const orig = clip && clip.writeText ? clip.writeText.bind(clip) : null;
   const spy = async (text) => {
     log.clipboard.push(text);
+    log.clipboardHtml.push('');
     if (orig) await orig(text).catch(() => {});
   };
+  // navigator.clipboard.write([ClipboardItem]): plain text and a formatted (bold) version
+  const spyWrite = async (items) => {
+    for (const item of items) {
+      const read = async (type) => (item.types.includes(type) ? (await item.getType(type)).text() : '');
+      log.clipboard.push(await read('text/plain'));
+      log.clipboardHtml.push(await read('text/html'));
+    }
+  };
   try {
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText: spy }, configurable: true });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: spy, write: spyWrite }, configurable: true });
   } catch (_) {
-    if (clip) clip.writeText = spy;
+    if (clip) {
+      clip.writeText = spy;
+      clip.write = spyWrite;
+    }
   }
 })();

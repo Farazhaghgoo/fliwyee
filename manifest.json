@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Fliwyee",
   "short_name": "Fliwyee",
-  "version": "0.4.1",
-  "description": "Learning Italian with YouTube, easier: save words and sentences from the subtitles and ask your AI chat about them.",
+  "version": "0.5.0",
+  "description": "Learning Italian with YouTube, easier: a notebook for every video, with the words and sentences you click in the subtitles, tags, notes and AI help.",
   "minimum_chrome_version": "121",
   "icons": {
     "16": "icons/icon16.png",
@@ -24,7 +24,17 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["storage", "downloads", "downloads.open", "sidePanel", "clipboardWrite", "scripting", "activeTab"],
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "downloads",
+    "downloads.open",
+    "downloads.ui",
+    "sidePanel",
+    "clipboardWrite",
+    "scripting",
+    "activeTab"
+  ],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://www.youtube-nocookie.com/*",
@@ -46,7 +56,7 @@
         "default": "Ctrl+Shift+E",
         "mac": "Command+Shift+E"
       },
-      "description": "End the session and save its files"
+      "description": "Save your notebook files now"
     }
   },
   "content_scripts": [
