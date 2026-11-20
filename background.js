@@ -56,9 +56,8 @@ async function capture(raw) {
   const now = Date.now();
   const current = st.current || { id: `s${now}`, startedAt: now, updatedAt: now, items: [] };
   const key = F.norm(item.text);
-  if (current.items.some((i) => F.norm(i.text) === key)) {
-    return { status: 'duplicate', count: current.items.length };
-  }
+  const dup = current.items.find((i) => F.norm(i.text) === key);
+  if (dup) return { status: 'duplicate', id: dup.id, count: current.items.length };
   const saved = { id: `i${now}${Math.random().toString(36).slice(2, 7)}`, at: now, ...item };
   current.items.push(saved);
   current.updatedAt = now;
@@ -88,16 +87,108 @@ async function removeItem(sessionId, id) {
   return { status: 'removed' };
 }
 
-// ---------- the session file ----------
+// ---------- editing (only when you open the editor) ----------
 
-// Writes (or rewrites) the session's file: Downloads/italian-subtitles/fliwyee_<start>.html
-// A small web page: double-click it, and every minute is a working link to that moment.
+function findItem(st, itemId) {
+  for (const s of [st.current, ...st.sessions]) {
+    const it = s && s.items.find((i) => i.id === itemId);
+    if (it) return { s, it, isCurrent: s === st.current };
+  }
+  return null;
+}
+
+async function getItem(itemId) {
+  const st = await getState();
+  const found = findItem(st, itemId);
+  return found ? { status: 'ok', sessionId: found.s.id, item: found.it } : { status: 'none' };
+}
+
+// Change an item's text, its sentence and your note. A corrected sentence is applied to every
+// item from that same sentence in the session, so they stay on one line in the file.
+async function editItem(m) {
+  const st = await getState();
+  const found = findItem(st, m.id);
+  if (!found) return { status: 'none' };
+  const { s, it, isCurrent } = found;
+  const oldSentence = it.type === 'sentence' ? it.text : it.context;
+  const text = str(m.text, 500) || it.text;
+  const sentence = str(m.sentence, 1000);
+  it.note = String(m.note == null ? it.note || '' : m.note).trim().slice(0, 2000);
+  it.text = text;
+  if (it.type !== 'sentence') it.context = sentence === text ? '' : sentence;
+  const newSentence = it.type === 'sentence' ? it.text : it.context;
+  if (oldSentence && newSentence && F.norm(oldSentence) !== F.norm(newSentence)) {
+    for (const other of s.items) {
+      if (other === it) continue;
+      if (other.type === 'sentence' && F.norm(other.text) === F.norm(oldSentence)) other.text = newSentence;
+      else if (other.type !== 'sentence' && F.norm(other.context) === F.norm(oldSentence)) other.context = newSentence;
+    }
+  }
+  s.updatedAt = Date.now();
+  await chrome.storage.local.set(isCurrent ? { current: s } : { sessions: st.sessions });
+  return { status: 'saved', item: it };
+}
+
+// Side panels that are open right now, by window (each open panel keeps a port to us).
+const openPanels = new Map(); // windowId -> port
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'sidepanel') return;
+  let windowId = null;
+  port.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'hello') {
+      windowId = msg.windowId;
+      openPanels.set(windowId, port);
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (windowId != null && openPanels.get(windowId) === port) openPanels.delete(windowId);
+  });
+});
+
+// N on YouTube: show the editor for that item in the side panel (opening it if needed), or in a
+// small window when Chrome doesn't let us open the side panel from here.
+// Called straight from onMessage (no waiting first): opening the side panel needs your key press.
+function openEditor(itemId, sender) {
+  const windowId = sender && sender.tab ? sender.tab.windowId : null;
+  const request = { id: itemId, at: Date.now(), closeAfter: !openPanels.has(windowId) };
+  const panel = openPanels.get(windowId);
+  if (panel) {
+    panel.postMessage({ type: 'edit', request });
+    return Promise.resolve({ status: 'panel' });
+  }
+  let opening;
+  try {
+    opening = windowId != null && chrome.sidePanel && chrome.sidePanel.open ? chrome.sidePanel.open({ windowId }) : Promise.reject();
+  } catch (e) {
+    opening = Promise.reject(e);
+  }
+  return chrome.storage.local
+    .set({ editRequest: request })
+    .then(() => opening)
+    .then(() => ({ status: 'panel' }))
+    .catch(async () => {
+      await chrome.storage.local.set({ editRequest: null });
+      const url = chrome.runtime.getURL(`sidepanel/sidepanel.html?editor=${encodeURIComponent(itemId)}`);
+      await chrome.windows.create({ url, type: 'popup', width: 440, height: 470, focused: true });
+      return { status: 'window' };
+    });
+}
+
+// ---------- the session files ----------
+
+async function download(filename, mime, content) {
+  const url = `data:${mime};charset=utf-8,` + encodeURIComponent(content);
+  return chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
+}
+
+// Writes (or rewrites) both files of a session in Downloads/italian-subtitles/:
+//   fliwyee_<start>.html  a small web page: every minute is a working link to that moment
+//   fliwyee_<start>.txt   the same as plain text
 async function writeFile(session) {
-  const filename = F.sessionFilename(session);
-  const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(F.sessionHtml(session));
-  const downloadId = await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
+  const filename = F.sessionFilename(session, 'html');
+  session.downloadId = await download(filename, 'text/html', F.sessionHtml(session));
+  session.txtDownloadId = await download(F.sessionFilename(session, 'txt'), 'text/plain', F.sessionText(session));
   session.filename = filename;
-  session.downloadId = downloadId;
   return filename;
 }
 
@@ -321,9 +412,16 @@ const HANDLERS = {
   saveFile: (m) => saveFile(m.sessionId),
   showFile: (m) => showFile(m.sessionId),
   deleteSession: (m) => deleteSession(m.sessionId),
+  editItem: (m) => editItem(m),
+  getItem: (m) => getItem(m.id),
 };
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === 'openEditor') {
+    // not queued: the side panel must be opened while your key press still counts
+    openEditor(msg.id, sender).then(sendResponse, () => sendResponse({ status: 'error' }));
+    return true;
+  }
   if (msg && msg.type === 'askAI') {
     // not queued: it only reads state, and it waits for other tabs
     askAI(msg.text).then(sendResponse, (err) => sendResponse({ status: 'error', message: String((err && err.message) || err) }));

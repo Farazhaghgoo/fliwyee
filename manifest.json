@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Fliwyee",
   "short_name": "Fliwyee",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Learning Italian with YouTube, easier: save words and sentences from the subtitles and ask your AI chat about them.",
   "minimum_chrome_version": "121",
   "icons": {
