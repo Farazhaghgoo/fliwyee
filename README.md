@@ -36,6 +36,7 @@ Fliwyee is **off** until you turn it on. While it's off, YouTube works exactly a
 | <kbd>R</kbd> | Replays the current line from its start and pauses at its end |
 | <kbd>Shift</kbd>+<kbd>R</kbd> | The same replay, at 0.75× speed |
 | <kbd>Q</kbd> or **Ask AI** in the message | Asks your AI chat about the last capture (or the line on screen) |
+| <kbd>N</kbd> | Opens the editor for the last capture: add a note (the meaning, what the AI said) or fix the text |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> or **Undo** in the message | Removes the last capture |
 
 The single keys only work while capture is on. They're ignored while you type in YouTube's
@@ -65,18 +66,34 @@ The prompts are yours to change in the side panel's **Settings**: one for a word
 (`{text}`, `{sentence}`), one for a sentence (`{sentence}`) and one for the whole session
 (`{items}`). **Reset prompts** brings back the defaults.
 
-### Sessions and the file
+### Notes and fixes
+
+Editing only happens when you ask for it: nothing opens on the video.
+
+- <kbd>N</kbd> on the video opens the editor for the last capture, in the side panel next to the
+  video (if the side panel is closed, it opens, and closes again when you're done). If Chrome
+  doesn't let Fliwyee open the side panel, the editor opens as a small window instead.
+- In the side panel, the ✎ next to an item (shown when you hover over it) edits older items.
+- The editor has the word or phrase, its sentence and your note. <kbd>Enter</kbd> saves,
+  <kbd>Shift</kbd>+<kbd>Enter</kbd> starts a new line, <kbd>Esc</kbd> cancels.
+- Fixing a sentence (for example a mistake in auto-generated subtitles) fixes it for every item
+  from that sentence.
+- Notes show in the side panel and in both saved files.
+
+### Sessions and the files
 
 - A session starts with your first capture. Every capture is saved immediately, so closing the
   tab or the browser loses nothing.
 - Pausing (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>) keeps the session open, also after you
   restart Chrome. Capture itself is always off when Chrome starts.
 - Ending the session (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> or **End session**) writes
-  `Downloads/italian-subtitles/fliwyee_YYYY-MM-DD_HH-MM.html`. **Open file** writes the latest
-  version at any time (it rewrites the same file) and opens it. **Show in folder** opens its
-  folder.
-- The file is a small web page that opens in your browser (double-click it). Grouped by video,
-  one sentence per line, with the words you took from it highlighted:
+  two files to `Downloads/italian-subtitles/`:
+  - `fliwyee_YYYY-MM-DD_HH-MM.html`, a small web page for reading, with working links
+  - `fliwyee_YYYY-MM-DD_HH-MM.txt`, the same as plain text that opens anywhere
+- **Open file** writes the latest version of both at any time (it rewrites the same files) and
+  opens the web page. **Show in folder** opens their folder.
+- The web page opens in your browser (double-click it). Grouped by video, one sentence per line,
+  with the words you took from it highlighted and your notes under it:
 
   | | |
   |---|---|
@@ -85,12 +102,14 @@ The prompts are yours to change in the side panel's **Settings**: one for a word
   | **[0:14](#)** | Avere a che fare con lui è difficile. |
 
   Every minute is a link that plays the video from that moment. All links open in the same
-  YouTube tab. At the bottom, **Plain text** has the same session as text, for copying:
+  YouTube tab. The `.txt` file (and **Plain text** at the bottom of the page) looks like this:
 
   ```
   0:03  Non posso fare a meno di te.  →  fare a meno di
+        fare a meno di: to do without
   0:10  Che c'entra questo con me?  →  c'entra, c'entra questo
   0:14  Avere a che fare con lui è difficile.
+        note: Dealing with him is hard.
   ```
 
 - The minute is 1 second before the line starts, so you hear the whole line. With
@@ -102,8 +121,8 @@ Click the toolbar icon to open it next to the video.
 
 - The on/off button (On / Paused / Off), your two shortcuts and a link to change them.
 - This session, newest first. Each item shows its sentence, the video title and a **▶ 4:12**
-  link that jumps to that moment (it opens the video if it's closed). Click an item to copy it
-  again, **AI** to ask about it, or ✕ to remove it.
+  link that jumps to that moment (it opens the video if it's closed), plus your note. Click an
+  item to copy it again, **AI** to ask about it, ✎ to edit it, or ✕ to remove it.
 - **Ask AI about all**, **Copy all** (as plain text), **Open file**, **Show in folder**,
   **End session**.
 - Past sessions can be asked about, copied, opened, shown in their folder or deleted.
