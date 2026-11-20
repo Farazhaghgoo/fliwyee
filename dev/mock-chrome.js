@@ -23,12 +23,38 @@
     scripted: [],
     shown: [],
     opened: [],
+    windowsCreated: [],
+    sidePanelOpened: [],
   };
 
   const onChanged = event();
   const onMessage = event();
   const onCommand = event();
   const onUpdated = event();
+  const onConnect = event();
+
+  // runtime.connect: a pair of ports, like the real thing
+  function portPair(name) {
+    const make = () => ({
+      name,
+      other: null,
+      onMessage: event(),
+      onDisconnect: event(),
+      postMessage(m) {
+        const o = this.other;
+        later(() => o.onMessage.listeners.slice().forEach((fn) => fn(clone(m), o)));
+      },
+      disconnect() {
+        const o = this.other;
+        later(() => o.onDisconnect.listeners.slice().forEach((fn) => fn(o)));
+      },
+    });
+    const a = make();
+    const b = make();
+    a.other = b;
+    b.other = a;
+    return [a, b];
+  }
 
   function dispatchMessage(msg) {
     return new Promise((resolve) => {
@@ -41,7 +67,7 @@
       };
       let waiting = false;
       for (const fn of onMessage.listeners.slice()) {
-        const keep = fn(clone(msg), { id: 'fliwyee-dev' }, respond);
+        const keep = fn(clone(msg), { id: 'fliwyee-dev', tab: { id: 1, windowId: 1 } }, respond);
         if (done) return;
         if (keep === true) waiting = true;
       }
@@ -82,9 +108,19 @@
       onMessage,
       onInstalled: event(),
       onStartup: event(),
+      onConnect,
       sendMessage(msg) {
         log.sent.push(clone(msg));
         return dispatchMessage(msg);
+      },
+      connect({ name }) {
+        const [client, server] = portPair(name);
+        later(() => onConnect.listeners.slice().forEach((fn) => fn(server)));
+        window.mockPorts = (window.mockPorts || []).concat([client]);
+        return client;
+      },
+      getURL(path) {
+        return `/${path}`;
       },
     },
     tabs: {
@@ -108,7 +144,16 @@
         return dispatchMessage(msg);
       },
     },
-    windows: { async update() {} },
+    windows: {
+      async update() {},
+      async getCurrent() {
+        return { id: 1 };
+      },
+      async create(props) {
+        log.windowsCreated.push(props);
+        return { id: 9 };
+      },
+    },
     // The "AI tab" is this page: the injected function runs here, against the fake message box.
     scripting: {
       async executeScript({ target, func, args }) {
@@ -147,7 +192,14 @@
         log.title = title;
       },
     },
-    sidePanel: { setPanelBehavior: async () => {} },
+    // window.mockSidePanelOpens = false makes open() fail, like Chrome without a key press
+    sidePanel: {
+      setPanelBehavior: async () => {},
+      async open(opts) {
+        log.sidePanelOpened.push(opts);
+        if (window.mockSidePanelOpens === false) throw new Error('needs a user gesture');
+      },
+    },
     commands: {
       onCommand,
       async getAll() {
