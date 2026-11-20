@@ -140,7 +140,11 @@
         setTimeout(() => onUpdated.listeners.slice().forEach((fn) => fn(2, { status: 'complete' }, tab)), 50);
         return tab;
       },
-      sendMessage(_tabId, msg) {
+      // tabs listed in window.mockTabsWithoutFliwyee act like tabs where Fliwyee isn't running
+      sendMessage(tabId, msg) {
+        if ((window.mockTabsWithoutFliwyee || []).includes(tabId)) {
+          return Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'));
+        }
         return dispatchMessage(msg);
       },
     },
@@ -156,9 +160,17 @@
     },
     // The "AI tab" is this page: the injected function runs here, against the fake message box.
     scripting: {
-      async executeScript({ target, func, args }) {
+      async executeScript({ target, func, args, files, world }) {
+        if (files) {
+          // adding Fliwyee to a tab: just record it (this page already has it)
+          log.scripted.push({ tabId: target.tabId, files, world: world || 'ISOLATED' });
+          return [{ result: undefined }];
+        }
         log.scripted.push({ tabId: target.tabId, args });
         return [{ result: await func(...(args || [])) }];
+      },
+      async insertCSS({ target, files }) {
+        log.scripted.push({ tabId: target.tabId, css: files });
       },
     },
     downloads: {
@@ -214,7 +226,9 @@
   window.fakeChrome = fake;
   window.fakeLog = log;
   window.fakeData = data;
-  window.fakeCommand = (name) => onCommand.listeners.forEach((fn) => fn(name));
+  // fakeCommand('toggle-capture', { id, url }): a keyboard shortcut pressed in that tab
+  window.fakeCommand = (name, tab) =>
+    onCommand.listeners.forEach((fn) => fn(name, tab || { id: 1, windowId: 1, url: location.href }));
   window.importScripts = () => {}; // background.js calls importScripts('lib/format.js'); the page loads it directly
   Object.defineProperty(window, 'chrome', { value: fake, configurable: true, writable: true });
 

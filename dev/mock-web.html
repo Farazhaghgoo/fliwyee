@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Un video italiano · some video website</title>
+    <link rel="stylesheet" href="../content/content.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #f3f3f3;
+        color: #222;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
+      .player {
+        position: relative;
+        width: min(100%, 760px);
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #263a5a, #4a2b3b);
+      }
+      video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      /* like Video.js: a full-size layer that lets clicks through, with cue boxes inside */
+      .vjs-text-track-display {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .vjs-text-track-display > div {
+        position: absolute;
+        bottom: 10%;
+        width: 100%;
+        text-align: center;
+      }
+      .vjs-text-track-cue {
+        display: inline-block;
+        padding: 2px 6px;
+        background: rgba(0, 0, 0, 0.8);
+        color: #fff;
+        font-size: 24px;
+        user-select: none;
+      }
+      .clock {
+        position: absolute;
+        right: 10px;
+        bottom: 8px;
+        color: #ddd;
+        font: 600 13px monospace;
+      }
+      .log {
+        margin-top: 12px;
+        padding: 10px;
+        border-radius: 8px;
+        background: #fff;
+        font: 12px/1.4 monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Un video italiano</h1>
+    <p>
+      A fake "other website". <code>?mode=track</code> (default): the browser draws the subtitles from the video's own
+      track. <code>?mode=dom</code>: the page draws them itself, like Video.js.
+    </p>
+    <div class="player" id="player">
+      <video></video>
+      <div class="vjs-text-track-display" id="captions"></div>
+      <div class="clock" id="clock"></div>
+    </div>
+    <div class="log" id="log"></div>
+
+    <script src="mock-chrome.js"></script>
+    <script src="../lib/format.js"></script>
+    <script src="../background.js"></script>
+    <script>
+      (() => {
+        const CUES = [
+          [0.5, 3.0, 'Non ho spiccioli per il caffè.'],
+          [3.0, 6.5, 'Non posso fare a meno di te.'],
+          [6.5, 10.0, "Ci metto un'ora\nad arrivare in ufficio."],
+        ];
+        const mode = new URLSearchParams(location.search).get('mode') || 'track';
+        const video = document.querySelector('video');
+        const events = (window.mockEvents = []);
+
+        // fake clock, like the fake YouTube page
+        const clock = { t: 0, playing: false, rate: 1, last: performance.now() };
+        const tick = () => {
+          const n = performance.now();
+          if (clock.playing) clock.t = Math.min(12, clock.t + ((n - clock.last) / 1000) * clock.rate);
+          clock.last = n;
+          return clock.t;
+        };
+        Object.defineProperties(video, {
+          currentTime: { get: tick, set: (v) => { tick(); clock.t = Math.max(0, Number(v) || 0); } },
+          paused: { get: () => !clock.playing },
+          playbackRate: { get: () => clock.rate, set: (v) => { tick(); clock.rate = Number(v) || 1; } },
+          play: { value: () => { tick(); clock.playing = true; return Promise.resolve(); } },
+          pause: { value: () => { tick(); clock.playing = false; } },
+        });
+        window.mockVideo = video;
+
+        // the video's own subtitle track
+        const track = video.addTextTrack('subtitles', 'Italiano', 'it');
+        for (const [a, b, text] of CUES) track.addCue(new VTTCue(a, b, text));
+        track.mode = mode === 'dom' ? 'hidden' : 'showing';
+        window.mockTrack = track;
+
+        // ?mode=dom: the page draws the subtitles itself
+        const box = document.getElementById('captions');
+        let shown = '';
+        setInterval(() => {
+          const t = video.currentTime;
+          document.getElementById('clock').textContent = `${t.toFixed(1)}s${clock.playing ? '' : ' ⏸'}`;
+          if (mode !== 'dom') return;
+          const cue = CUES.find(([a, b]) => t >= a && t < b);
+          const key = cue ? cue[2] : '';
+          if (key === shown) return;
+          shown = key;
+          box.textContent = '';
+          if (cue) {
+            const wrap = document.createElement('div');
+            const c = document.createElement('div');
+            c.className = 'vjs-text-track-cue';
+            c.textContent = cue[2].replace('\n', ' ');
+            wrap.append(c);
+            box.append(wrap);
+          }
+        }, 40);
+
+        // players toggle play when you click the video
+        document.getElementById('player').addEventListener('click', () => {
+          if (video.paused) video.play();
+          else video.pause();
+          events.push(`site: player click -> ${video.paused ? 'pause' : 'play'}`);
+        });
+
+        setInterval(() => {
+          const d = window.fakeData;
+          const items = d.current ? d.current.items.map((i) => `  [${i.type}] ${i.text}  <- ${i.context}  @${i.time}s  (${i.site})`) : [];
+          document.getElementById('log').textContent = [
+            `mode: ${mode}   enabled: ${!!d.enabled}   track mode: ${track.mode}`,
+            `current session (${items.length}):`,
+            ...items,
+            `events: ${JSON.stringify(events.slice(-4))}`,
+          ].join('\n');
+        }, 300);
+      })();
+    </script>
+    <script src="../content/sites.js"></script>
+    <script src="../content/content.js"></script>
+  </body>
+</html>
