@@ -9,6 +9,9 @@ saved to your study session, together with its sentence and the moment in the vi
 session, it's saved as a small web page: one sentence per line, your words highlighted, and every
 minute a working link back to that moment in the video.
 
+YouTube is the main site. Fliwyee also runs on Netflix, and on other video websites when you
+add it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> (see [Other websites](#other-websites)).
+
 ## Install
 
 1. Open `chrome://extensions`.
@@ -130,6 +133,28 @@ Click the toolbar icon to open it next to the video.
   mistakes.
 - **Settings**: which AI to open when none is open, and the three prompts.
 
+## Other websites
+
+| Where | How | What works |
+|---|---|---|
+| **YouTube** (also players embedded in other pages) | Runs by itself | Everything |
+| **Netflix** | Runs by itself | Capturing, notes, Ask AI, files. Replay and minute links go through Netflix's own player. Best effort: not tested on Netflix yet |
+| **Any other video website** | Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> on the page: the first press adds Fliwyee to that tab and turns capture on | Capturing, notes, Ask AI, files, replay when the video has a subtitle track |
+
+On other websites:
+
+- If the page shows subtitles in a way that can't be clicked (the browser draws them), Fliwyee
+  hides that drawing while capture is on and shows the same lines itself, clickable. Turning
+  capture off brings the page's own subtitles back.
+- Subtitles drawn by common web players (Video.js, JW Player, Shaka, Plyr, Bitmovin, Prime Video,
+  Disney+) are made clickable directly.
+- There's no general way to link to a moment on another website, so the minute links in the side
+  panel and the files open the page, and the minute tells you where to go.
+- After you reload the page or go to another site, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>
+  again there.
+- Installed apps (the Netflix app for Windows, phone apps) can't work: a Chrome extension can't
+  see inside them. Watch in Chrome instead.
+
 ## Change the shortcuts
 
 Open `chrome://extensions/shortcuts`, or use the **change** link in the side panel. If a
@@ -139,9 +164,11 @@ shows "not set". Pick another one there.
 ## Privacy
 
 Your captures stay in your browser (`chrome.storage.local`) and in the files written to your
-Downloads folder. Fliwyee runs on `www.youtube.com`. It touches `chatgpt.com`, `claude.ai` and
-`gemini.google.com` only when you ask the AI, to put the prompt in the message box. It never
-sends anything by itself: you press Enter.
+Downloads folder. Fliwyee runs on YouTube and Netflix. On other websites it runs only in a tab
+where you press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> (Chrome's "active tab" permission).
+It touches `chatgpt.com`, `claude.ai` and `gemini.google.com` only when you ask the AI, to put the
+prompt in the message box. It never sends anything by itself: you press Enter. It only reads
+subtitle text; it never downloads videos.
 
 ## How it works
 
@@ -149,8 +176,9 @@ sends anything by itself: you press Enter.
 |---|---|
 | `manifest.json` | Chrome extension setup (Manifest V3) |
 | `background.js` | On/off, sessions, duplicates, undo, icon counter, writing the file, Ask AI |
-| `content/page-hook.js` | Runs in the YouTube page and passes on a copy of the subtitle track the player downloads, so each line's start and end time is known |
-| `content/content.js` | Clicks, drags, keys, replay, highlight and messages on the player |
+| `content/page-hook.js` | Runs in the video page and passes on a copy of the subtitle file the player downloads (YouTube, Netflix), so each line's start and end time is known; on Netflix it also jumps through Netflix's own player |
+| `content/sites.js` | One adapter per site (YouTube, Netflix, any other website): where the subtitles are, how to jump, what a link looks like |
+| `content/content.js` | Clicks, drags, keys, replay, highlight, Fliwyee's own subtitle line and messages on the player |
 | `content/content.css` | Makes the subtitles clickable and selectable while capture is on |
 | `sidepanel/` | The side panel |
 | `lib/format.js` | The file layout, prompts, file names and times, shared by all parts |
@@ -171,4 +199,6 @@ half a sentence.
   subtitles (including two auto-subtitle lines at once), the Chrome extension APIs Fliwyee uses
   and a ChatGPT message box, and shows the side panel next to it. The log under the player shows
   the session, the clipboard, the written file and anything that leaked through to "YouTube".
+- `http://localhost:8765/dev/mock-web.html` is a fake "other website": `?mode=track` has
+  subtitles drawn by the browser, `?mode=dom` has subtitles drawn by the page (like Video.js).
 - Icons: `powershell -ExecutionPolicy Bypass -File tools\make-icons.ps1`
