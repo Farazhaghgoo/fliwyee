@@ -20,6 +20,24 @@
       </button>
     </header>
 
+    <!-- Only shown when you press N on the video or click ✎ on an item. -->
+    <section id="editor" class="editor" hidden aria-labelledby="editor-title">
+      <h2 id="editor-title">Edit</h2>
+      <div id="ed-text-row">
+        <label for="ed-text">Word or phrase</label>
+        <input id="ed-text" type="text" spellcheck="false" autocomplete="off" />
+      </div>
+      <label for="ed-sentence">Sentence</label>
+      <textarea id="ed-sentence" rows="2" spellcheck="false"></textarea>
+      <label for="ed-note">Your note</label>
+      <textarea id="ed-note" rows="3" placeholder="The meaning, or what the AI said"></textarea>
+      <p class="hint">Enter saves · Shift+Enter new line · Esc cancels</p>
+      <div class="actions">
+        <button type="button" id="ed-save" class="primary">Save</button>
+        <button type="button" id="ed-cancel">Cancel</button>
+      </div>
+    </section>
+
     <p class="shortcut">
       Pause / resume <kbd id="sc-toggle">…</kbd> · End session <kbd id="sc-end">…</kbd>
       <a href="#" id="change-shortcut">change</a>
@@ -33,6 +51,7 @@
         <li><kbd>S</kbd> the whole subtitle line</li>
         <li><kbd>R</kbd> replay the line · <kbd>Shift</kbd>+<kbd>R</kbd> slower</li>
         <li><kbd>Q</kbd> ask your AI chat about the last capture</li>
+        <li><kbd>N</kbd> add a note to the last capture, or fix it</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo the last capture</li>
       </ul>
       <p>

@@ -234,8 +234,17 @@ button {
 
 .item {
   position: relative;
-  padding: 9px 62px 9px 0;
+  padding: 9px 86px 9px 0;
   border-bottom: 1px solid var(--line);
+}
+
+.item .note {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 3px solid var(--accent);
+  font-size: 13px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .item .tools {
@@ -333,6 +342,7 @@ button {
   color: var(--warn-text);
 }
 
+.item .edit,
 .item .del {
   width: 22px;
   height: 22px;
@@ -345,7 +355,9 @@ button {
   opacity: 0;
 }
 
+.item:hover .edit,
 .item:hover .del,
+.item .edit:focus-visible,
 .item .del:focus-visible {
   opacity: 1;
 }
@@ -353,6 +365,65 @@ button {
 .item .del:hover {
   background: var(--chip);
   color: var(--danger);
+}
+
+.item .edit:hover {
+  background: var(--chip);
+  color: var(--accent);
+}
+
+/* the editor: only shown when you press N on the video or click ✎ */
+.editor {
+  margin: 12px 0;
+  padding: 10px 12px 12px;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.editor h2 {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.editor label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.editor input,
+.editor textarea {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  resize: vertical;
+}
+
+.editor input:focus,
+.editor textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.editor .hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* opened as a small window just for editing */
+body.editor-only > :not(.editor):not(.status):not(script) {
+  display: none !important;
+}
+
+body.editor-only .editor {
+  margin-top: 0;
 }
 
 /* past sessions */
@@ -394,6 +465,7 @@ button {
 }
 
 @media (hover: none) {
+  .item .edit,
   .item .del {
     opacity: 1;
   }

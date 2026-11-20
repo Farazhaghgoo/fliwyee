@@ -133,6 +133,7 @@
     const li = el('li', `item item-${it.type}`);
     li.append(button(it.text, 'text', () => copy(it.text, `Copied: ${it.text}`), 'Click to copy'));
     if (it.context) li.append(el('div', 'ctx', it.context));
+    if (it.note) li.append(el('div', 'note', it.note));
 
     const meta = el('div', 'meta');
     if (it.type !== 'word') meta.append(el('span', 'tag', it.type));
@@ -160,6 +161,9 @@
 
     const tools = el('div', 'tools');
     tools.append(button('AI', 'ai', () => ask(F.itemPrompt(it, state.settings)), 'Ask your AI chat about this'));
+    const edit = button('✎', 'edit', () => showEditor(it.id, false), 'Edit / add a note');
+    edit.setAttribute('aria-label', `Edit ${it.text}`);
+    tools.append(edit);
     const del = button('✕', 'del', () => send({ type: 'remove', sessionId: session.id, id: it.id }), 'Remove');
     del.setAttribute('aria-label', `Remove ${it.text}`);
     tools.append(del);
@@ -333,9 +337,106 @@
     $('sc-end-2').textContent = sc('end-session', 'Ctrl+Shift+E');
   }
 
+  // ---------- the editor (only when you press N on the video, or click ✎) ----------
+
+  // ?editor=<itemId>: this page was opened as a small window just for editing.
+  const editorOnlyId = new URLSearchParams(location.search).get('editor');
+  let editing = null; // { id, closeAfter }
+
+  function findLocal(itemId) {
+    for (const s of [state.current, ...(state.sessions || [])]) {
+      const it = s && s.items.find((i) => i.id === itemId);
+      if (it) return it;
+    }
+    return null;
+  }
+
+  async function showEditor(itemId, closeAfter) {
+    let it = findLocal(itemId);
+    if (!it) {
+      const r = await send({ type: 'getItem', id: itemId });
+      it = r && r.item;
+    }
+    if (!it) {
+      status('That item is gone');
+      if (closeAfter) window.close();
+      return;
+    }
+    editing = { id: itemId, closeAfter: !!closeAfter };
+    const isSentence = it.type === 'sentence';
+    $('ed-text-row').hidden = isSentence;
+    $('ed-text').value = it.text;
+    $('ed-sentence').value = isSentence ? it.text : it.context || '';
+    $('ed-note').value = it.note || '';
+    $('editor-title').textContent = isSentence ? 'Edit sentence' : `Edit “${it.text}”`;
+    $('editor').hidden = false;
+    window.scrollTo({ top: 0 });
+    const note = $('ed-note');
+    note.focus();
+    note.setSelectionRange(note.value.length, note.value.length);
+  }
+
+  function closeEditor() {
+    const closeAfter = editing && editing.closeAfter;
+    editing = null;
+    $('editor').hidden = true;
+    if (closeAfter || editorOnlyId) window.close(); // back to the video
+  }
+
+  async function saveEditor() {
+    if (!editing) return;
+    const isSentence = $('ed-text-row').hidden;
+    const sentence = $('ed-sentence').value.replace(/\s+/g, ' ').trim();
+    const r = await send({
+      type: 'editItem',
+      id: editing.id,
+      text: isSentence ? sentence : $('ed-text').value,
+      sentence,
+      note: $('ed-note').value,
+    });
+    if (r && r.status === 'saved') status('Saved');
+    else status('Could not save');
+    closeEditor();
+  }
+
+  $('ed-save').addEventListener('click', saveEditor);
+  $('ed-cancel').addEventListener('click', closeEditor);
+  $('editor').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeEditor();
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      saveEditor();
+    }
+  });
+
+  // A request from N on the video: kept in storage when this panel had to be opened for it.
+  function takeEditRequest(req) {
+    if (!req || Date.now() - req.at > 15000) return;
+    chrome.storage.local.set({ editRequest: null });
+    showEditor(req.id, req.closeAfter);
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.editRequest && !editorOnlyId) takeEditRequest(changes.editRequest.newValue);
+  });
+
+  // Tell the background this side panel is open (so N goes straight here). Reconnect if the
+  // background was asleep and dropped the connection.
+  function connectPanel() {
+    if (editorOnlyId) return;
+    const port = chrome.runtime.connect({ name: 'sidepanel' });
+    chrome.windows.getCurrent().then((w) => port.postMessage({ type: 'hello', windowId: w.id }));
+    port.onMessage.addListener((msg) => {
+      if (msg && msg.type === 'edit') showEditor(msg.request.id, msg.request.closeAfter);
+    });
+    port.onDisconnect.addListener(() => setTimeout(connectPanel, 1000));
+  }
+
   // Keep the help open on first use only.
   try {
-    if (!localStorage.getItem('fliwyee-help-seen')) {
+    if (!editorOnlyId && !localStorage.getItem('fliwyee-help-seen')) {
       $('help').open = true;
       localStorage.setItem('fliwyee-help-seen', '1');
     }
@@ -343,9 +444,15 @@
     /* storage blocked: leave it closed */
   }
 
-  chrome.storage.local.get({ enabled: false, current: null, sessions: [], settings: null }).then((st) => {
-    state = st;
+  if (editorOnlyId) document.body.classList.add('editor-only');
+
+  chrome.storage.local.get({ enabled: false, current: null, sessions: [], settings: null, editRequest: null }).then((st) => {
+    const { editRequest, ...rest } = st;
+    state = rest;
     render();
+    if (editorOnlyId) showEditor(editorOnlyId, true);
+    else takeEditRequest(editRequest);
   });
+  connectPanel();
   showShortcuts();
 })();

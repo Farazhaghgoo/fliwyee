@@ -5,6 +5,7 @@
 //   S                   -> copy + save the whole subtitle line
 //   R / Shift+R         -> replay the current line (Shift = 0.75x), then pause at its end
 //   Q                   -> ask your AI chat about the last capture (or the line on screen)
+//   N                   -> edit the last capture / add a note (opens the editor in the side panel)
 //   Ctrl+Z              -> undo the last capture
 // When capture is OFF nothing changes on YouTube.
 (() => {
@@ -483,6 +484,18 @@
     if (w) capture('word', w.text, sentence);
   }
 
+  // N: edit the last capture (its text, sentence and your note) in the side panel.
+  // Nothing opens unless you press N.
+  async function openEditor() {
+    if (!lastCapture || !lastCapture.id) {
+      showToast('Capture a word first, then press N to add a note.');
+      return;
+    }
+    const res = await send({ type: 'openEditor', id: lastCapture.id });
+    if (!res || res.status === 'gone') return;
+    if (res.status === 'error') showToast('Could not open the editor. Use ✎ in the side panel.');
+  }
+
   async function undo(id) {
     const res = await send({ type: 'undo', id });
     if (!res || res.status === 'gone') return;
@@ -628,6 +641,9 @@
     } else if (noMods && !e.shiftKey && key === 'q') {
       block(e, true);
       askAI(null);
+    } else if (noMods && !e.shiftKey && key === 'n') {
+      block(e, true);
+      openEditor();
     } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && key === 'z') {
       block(e, true);
       undo();
